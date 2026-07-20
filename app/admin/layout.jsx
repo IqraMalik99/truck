@@ -1,9 +1,9 @@
 import Sidebar from "../components/admin/Sidebar";
 
 export const metadata = {
-  title: "Fleet Ops — Admin Dashboard",
+  title: "Truck Logging",
+  description: "Truck Logging",
 };
-
 export default function DashboardLayout({ children }) {
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#f4f6f9" }}>
