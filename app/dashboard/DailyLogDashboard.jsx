@@ -25,6 +25,12 @@ import SearchableSelect from "../components/Searchableselect";
   where the trip actually ended. Trailer is required, same as truck: the
   backend (/api/trips) should reject a missing trailer just like it already
   rejects a missing truck.
+
+  Color scale used across this file:
+    #DC2626 (red-600)  — primary / normal actions
+    #B91C1C (red-700)  — hover state
+    #7F1D1D (red-900)  — darkest red, reserved for critical/irreversible actions
+                          (End Day, Save & End Trip, End Trip)
 */
 
 const STATUS_OPTIONS = [
@@ -279,20 +285,20 @@ export default function DailyLogDashboard() {
   }
 
   async function reopenDay() {
-  setError("");
-  setReopeningDay(true);
-  try {
-    const res = await fetch("/api/daily-log/re-open", { method: "POST" });
-    if (!res.ok) throw new Error(await readError(res, "Couldn't reopen the day. Try again."));
-    const data = await res.json();
-    setDailyLog(data.log);
-    setTrips(data.trips || data.log.trips || []);
-  } catch (err) {
-    setError(err.message || "Couldn't reopen the day. Try again.");
-  } finally {
-    setReopeningDay(false);
+    setError("");
+    setReopeningDay(true);
+    try {
+      const res = await fetch("/api/daily-log/re-open", { method: "POST" });
+      if (!res.ok) throw new Error(await readError(res, "Couldn't reopen the day. Try again."));
+      const data = await res.json();
+      setDailyLog(data.log);
+      setTrips(data.trips || data.log.trips || []);
+    } catch (err) {
+      setError(err.message || "Couldn't reopen the day. Try again.");
+    } finally {
+      setReopeningDay(false);
+    }
   }
-}
 
   // Streams the PDF report back from the server and saves it as a file —
   // only meaningful once the day is closed, since that's when totals are final.
@@ -343,19 +349,19 @@ export default function DailyLogDashboard() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+        <div className="bg-red-50 border border-red-200 text-[#7F1D1D] text-sm rounded-lg px-4 py-3">
           {error}
         </div>
       )}
 
       {/* Not started yet */}
       {!dailyLog && (
-        <div className="bg-white rounded-xl border border-slate-200 p-10 text-center space-y-4">
+        <div className="bg-white rounded-xl border border-slate-200 p-6 sm:p-10 text-center space-y-4">
           <p className="text-slate-500 text-sm">You haven't started today's log yet.</p>
           <button
             onClick={startDay}
             disabled={startingDay}
-            className="bg-[#DC2626] text-white font-semibold px-6 py-3 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed transition"
+            className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-6 py-3 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed transition"
           >
             {startingDay ? "Starting…" : "Start Your Day"}
           </button>
@@ -374,12 +380,12 @@ export default function DailyLogDashboard() {
 
           {/* Trips */}
           <section className="bg-white rounded-xl border border-slate-200">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-4 border-b border-slate-100">
               <h2 className="font-semibold">Trips today</h2>
               {!dayEnded && (
                 <button
                   onClick={() => setShowTripForm((v) => !v)}
-                  className="text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] px-4 py-2 rounded-lg transition"
+                  className="w-full sm:w-auto text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] px-4 py-2 rounded-lg transition"
                 >
                   + Add Another Trip
                 </button>
@@ -397,7 +403,7 @@ export default function DailyLogDashboard() {
 
             <div className="divide-y divide-slate-100">
               {trips.length === 0 && !showTripForm && (
-                <p className="px-5 py-6 text-sm text-slate-400">No trips logged yet today.</p>
+                <p className="px-4 sm:px-5 py-6 text-sm text-slate-400">No trips logged yet today.</p>
               )}
               {trips.map((trip) => (
                 <TripRow
@@ -413,7 +419,7 @@ export default function DailyLogDashboard() {
 
           {/* Status / schedule */}
           <section className="bg-white rounded-xl border border-slate-200">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-4 border-b border-slate-100">
               <div>
                 <h2 className="font-semibold">Duty status</h2>
                 <p className="text-xs text-slate-400">
@@ -423,7 +429,7 @@ export default function DailyLogDashboard() {
               {!dayEnded && (
                 <button
                   onClick={() => setShowStatusForm((v) => !v)}
-                  className="text-sm font-medium text-[#B91C1C] border border-[#DC2626]/50 hover:border-[#DC2626] px-4 py-2 rounded-lg transition"
+                  className="w-full sm:w-auto text-sm font-medium text-[#B91C1C] border border-[#DC2626]/50 hover:border-[#DC2626] hover:bg-red-50 px-4 py-2 rounded-lg transition"
                 >
                   + Add Status
                 </button>
@@ -434,8 +440,10 @@ export default function DailyLogDashboard() {
               <StatusForm onCancel={() => setShowStatusForm(false)} onSubmit={addStatus} />
             )}
 
-            <div className="px-5 py-5 overflow-x-auto">
-              <StatusTimeline statusChanges={statusChanges} />
+            <div className="px-4 sm:px-5 py-5 overflow-x-auto bg-white">
+              <div className="min-w-[560px] sm:min-w-0">
+                <StatusTimeline statusChanges={statusChanges} />
+              </div>
             </div>
 
             {statusChanges.length > 0 && (
@@ -443,22 +451,29 @@ export default function DailyLogDashboard() {
                 {statusChanges.map((s, i) => {
                   const opt = STATUS_OPTIONS.find((o) => o.value === s.status);
                   return (
-                    <div key={i} className="flex items-center justify-between px-5 py-3 text-sm">
-                      <div className="flex items-center gap-3">
+                    <div
+                      key={i}
+                      className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 sm:px-5 py-3 text-sm"
+                    >
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
                         <span
-                          className="w-2.5 h-2.5 rounded-full"
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
                           style={{ backgroundColor: opt?.color }}
                         />
-                        <span className="font-medium">{opt?.label}</span>
-                        <span className="font-mono text-slate-500">
+                        <span className="font-medium whitespace-nowrap">{opt?.label}</span>
+                        <span className="font-mono text-slate-500 whitespace-nowrap">
                           {s.from} – {s.to}
                         </span>
-                        {s.purpose && <span className="text-slate-400">· {s.purpose}</span>}
+                        {s.purpose && (
+                          <span className="text-slate-400 truncate max-w-[180px] sm:max-w-none">
+                            · {s.purpose}
+                          </span>
+                        )}
                       </div>
                       {!dayEnded && (
                         <button
                           onClick={() => removeStatus(i)}
-                          className="text-slate-400 hover:text-red-500 text-xs"
+                          className="text-slate-400 hover:text-[#7F1D1D] text-xs shrink-0"
                         >
                           Remove
                         </button>
@@ -470,50 +485,51 @@ export default function DailyLogDashboard() {
             )}
           </section>
 
-          {/* End day */}
+          {/* End day — darkest red: this locks the whole day */}
           {!dayEnded && (
             <div className="flex justify-end">
               <button
                 onClick={endDay}
                 disabled={endingDay}
-                className="bg-[#1B2430] text-white font-semibold px-6 py-3 rounded-lg hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed transition"
+                className="w-full sm:w-auto bg-[#7F1D1D] text-white font-semibold px-6 py-3 rounded-lg hover:bg-[#5c1515] disabled:opacity-60 disabled:cursor-not-allowed transition"
               >
                 {endingDay ? "Ending…" : "End Day"}
               </button>
             </div>
           )}
-        {dayEnded && (
-  <div className="bg-slate-100 border border-slate-200 rounded-lg px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
-    <div className="flex items-center gap-3">
-      <CheckCircleIcon className="w-6 h-6 text-emerald-500 shrink-0" />
-      <p className="text-sm text-slate-600">
-        Today's log is closed. Miles, fuel, and duty hours are locked in.
-      </p>
-    </div>
-    <div className="flex items-center gap-2">
-      <button
-        onClick={() => {
-          if (window.confirm("Reopen today's log? You'll be able to edit trips and statuses again.")) {
-            reopenDay();
-          }
-        }}
-        disabled={reopeningDay}
-        className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition"
-      >
-        {reopeningDay ? <SpinnerIcon className="w-4 h-4" /> : null}
-        {reopeningDay ? "Reopening…" : "Reopen Day"}
-      </button>
-      <button
-        onClick={downloadReport}
-        disabled={downloadingReport}
-        className="inline-flex items-center gap-2 text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition"
-      >
-        {downloadingReport ? <SpinnerIcon className="w-4 h-4" /> : <ReportIcon className="w-4 h-4" />}
-        {downloadingReport ? "Generating…" : "Download PDF Report"}
-      </button>
-    </div>
-  </div>
-)}
+
+          {dayEnded && (
+            <div className="bg-white border border-slate-200 rounded-lg px-4 sm:px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <CheckCircleIcon className="w-6 h-6 text-emerald-500 shrink-0" />
+                <p className="text-sm text-slate-600">
+                  Today's log is closed. Miles, fuel, and duty hours are locked in.
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <button
+                  onClick={() => {
+                    if (window.confirm("Reopen today's log? You'll be able to edit trips and statuses again.")) {
+                      reopenDay();
+                    }
+                  }}
+                  disabled={reopeningDay}
+                  className="inline-flex items-center justify-center gap-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition"
+                >
+                  {reopeningDay ? <SpinnerIcon className="w-4 h-4" /> : null}
+                  {reopeningDay ? "Reopening…" : "Reopen Day"}
+                </button>
+                <button
+                  onClick={downloadReport}
+                  disabled={downloadingReport}
+                  className="inline-flex items-center justify-center gap-2 text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition"
+                >
+                  {downloadingReport ? <SpinnerIcon className="w-4 h-4" /> : <ReportIcon className="w-4 h-4" />}
+                  {downloadingReport ? "Generating…" : "Download PDF Report"}
+                </button>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -527,7 +543,7 @@ function SummaryCard({ label, value, highlight = false }) {
         }`}
     >
       <p className="text-xs text-slate-400 font-mono uppercase tracking-wide">{label}</p>
-      <p className={`text-lg font-semibold mt-0.5 ${highlight ? "text-[#B91C1C]" : ""}`}>{value}</p>
+      <p className={`text-lg font-semibold mt-0.5 ${highlight ? "text-[#7F1D1D]" : ""}`}>{value}</p>
     </div>
   );
 }
@@ -622,7 +638,7 @@ function LocationFields({ city, state, onChangeCity, onChangeState, autoFetch = 
           type="button"
           onClick={useMyLocation}
           disabled={locating}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-[#B91C1C] bg-red-50 border border-red-200 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed rounded-full px-3 py-1.5 transition"
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 text-xs font-medium text-[#B91C1C] bg-red-50 border border-red-200 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed rounded-full px-3 py-1.5 transition"
         >
           {locating ? <SpinnerIcon className="w-3.5 h-3.5" /> : <PinIcon className="w-3.5 h-3.5" />}
           {locating ? "Locating…" : "Use my current location"}
@@ -704,13 +720,13 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
   }
 
   return (
-    <div className="px-5 py-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="font-medium">
+    <div className="px-4 sm:px-5 py-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-medium truncate">
             {trip.endLocation?.formatted || (isOpen ? "Trip in progress" : "Trip completed")}
           </p>
-          <p className="text-xs text-slate-400 font-mono">
+          <p className="text-xs text-slate-400 font-mono break-words">
             {trip.startLocation?.formatted} → {trip.endLocation?.formatted || "in progress"} · odo{" "}
             {trip.odometerBeginning}
             {trip.odometerEnding ? ` – ${trip.odometerEnding}` : ""}
@@ -720,7 +736,7 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
         {isOpen && !dayEnded && (
           <button
             onClick={() => setEnding((v) => !v)}
-            className="text-sm font-medium text-[#B91C1C] border border-[#DC2626]/50 hover:border-[#DC2626] px-4 py-2 rounded-lg transition"
+            className="self-start sm:self-auto w-full sm:w-auto shrink-0 text-sm font-medium text-white bg-[#7F1D1D] hover:bg-[#5c1515] px-4 py-2 rounded-lg transition"
           >
             End Trip
           </button>
@@ -732,7 +748,7 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
       {states.length > 0 && (
         <div className="mt-3 space-y-1">
           {states.map((s, i) => (
-            <p key={i} className="text-xs font-mono text-slate-500">
+            <p key={i} className="text-xs font-mono text-slate-500 break-words">
               {s.location?.formatted}: {s.startOdometer} – {s.endOdometer ?? "…"}
             </p>
           ))}
@@ -773,7 +789,7 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
               className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
             />
           </Field>
-          <Field label="Fuel added (gal, optional)">
+          <Field label="Fuel added (gal)">
             <input
               type="number"
               value={fuel}
@@ -789,21 +805,21 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
             autoFetch
           />
           {endLocationError && (
-            <p className="sm:col-span-3 text-xs text-red-600 -mt-2">{endLocationError}</p>
+            <p className="sm:col-span-3 text-xs text-[#7F1D1D] -mt-2">{endLocationError}</p>
           )}
-          <div className="sm:col-span-3 flex justify-end gap-2">
+          <div className="sm:col-span-3 flex flex-col sm:flex-row justify-end gap-2">
             <button
               type="button"
               onClick={() => setEnding(false)}
               disabled={savingEnd}
-              className="px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full sm:w-auto px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={savingEnd}
-              className="bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full sm:w-auto bg-[#7F1D1D] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#5c1515] disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {savingEnd ? "Saving…" : "Save & End Trip"}
             </button>
@@ -855,19 +871,19 @@ function StateForm({ onCancel, onSubmit, saving }) {
         onChangeState={setStateName}
         autoFetch
       />
-      <div className="sm:col-span-3 flex justify-end gap-2">
+      <div className="sm:col-span-3 flex flex-col sm:flex-row justify-end gap-2">
         <button
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="px-4 py-2 rounded-lg text-slate-500 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto px-4 py-2 rounded-lg text-slate-500 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={saving}
-          className="bg-[#DC2626] text-white font-semibold px-4 py-2 rounded-lg text-sm hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-4 py-2 rounded-lg text-sm hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? "Saving…" : "Save"}
         </button>
@@ -916,7 +932,7 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
   return (
     <form
       onSubmit={submit}
-      className="px-5 py-5 border-b border-slate-100 bg-slate-50/60 grid grid-cols-1 sm:grid-cols-3 gap-4"
+      className="px-4 sm:px-5 py-5 border-b border-slate-100 bg-slate-50/60 grid grid-cols-1 sm:grid-cols-3 gap-4"
     >
       <LocationFields
         city={city}
@@ -943,7 +959,7 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
           options={trailerOptions}
           placeholder="Select trailer"
         />
-        {trailerError && <p className="text-xs text-red-600 mt-1">{trailerError}</p>}
+        {trailerError && <p className="text-xs text-[#7F1D1D] mt-1">{trailerError}</p>}
       </Field>
       <Field label="Starting odometer">
         <input
@@ -954,19 +970,19 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
           className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
         />
       </Field>
-      <div className="sm:col-span-3 flex justify-end gap-2 pt-1">
+      <div className="sm:col-span-3 flex flex-col sm:flex-row justify-end gap-2 pt-1">
         <button
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={saving}
-          className="bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? "Saving…" : "Save Trip"}
         </button>
@@ -1000,7 +1016,7 @@ function StatusForm({ onCancel, onSubmit }) {
   return (
     <form
       onSubmit={submit}
-      className="px-5 py-5 border-b border-slate-100 bg-slate-50/60 grid grid-cols-1 sm:grid-cols-4 gap-4"
+      className="px-4 sm:px-5 py-5 border-b border-slate-100 bg-slate-50/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"
     >
       <Field label="Status">
         <select
@@ -1041,19 +1057,19 @@ function StatusForm({ onCancel, onSubmit }) {
           className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
         />
       </Field>
-      <div className="sm:col-span-4 flex justify-end gap-2">
+      <div className="sm:col-span-2 lg:col-span-4 flex flex-col sm:flex-row justify-end gap-2">
         <button
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={saving}
-          className="bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? "Saving…" : "Add Status"}
         </button>
