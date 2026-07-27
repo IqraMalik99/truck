@@ -23,13 +23,7 @@ const TrailerSchema = new Schema({
 }, { timestamps: true });
 
 
-// ============================================
-// LOCATION (generic — not every country has a "state")
-// city/state/country are each optional on their own since coverage varies
-// by country; `formatted` is always populated and is what the UI shows.
-// e.g. { city: "Austin", state: "TX", country: "US", formatted: "Austin, TX" }
-// e.g. { city: "Lahore", state: "Punjab", country: "PK", formatted: "Lahore, Punjab" }
-// e.g. { city: "Paris", state: "", country: "FR", formatted: "Paris" }
+
 // ============================================
 const LocationSchema = new Schema({
     city: String,
@@ -46,6 +40,7 @@ const LocationSchema = new Schema({
 const TripStateSchema = new Schema({
     location: { type: LocationSchema, required: true },
     startOdometer: { type: Number, required: true },
+    fuel: Number,
     endOdometer: Number   // null/undefined while the truck is still in this state
 }, { _id: false });
 
@@ -88,7 +83,7 @@ const DriverDailyLogSchema = new Schema({
     statusChanges: [{
         status: {
             type: String,
-            enum: ["off_duty", "sleeper_berth", "driving", "on_duty"]
+            enum: ["off_duty", "sleeper", "driving", "on_duty"]
         },
         from: String,   // "06:00 AM"
         to: String,     // "10:30 AM"

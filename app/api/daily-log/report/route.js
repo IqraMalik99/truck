@@ -11,7 +11,9 @@ import { getCurrentDriver } from "../../../lib/getCurrentDriver";
 // ---------------------------------------------------------------------------
 // Design tokens — keep every color/spacing decision in one place so the
 // report reads as a single coherent document instead of a stack of
-// independently-styled blocks.
+// independently-styled blocks. Rebranded to match the dashboard's red
+// theme (#DC2626 family) instead of the previous unrelated blue accent,
+// so the PDF feels like part of the same product as the app.
 // ---------------------------------------------------------------------------
 const COLORS = {
   ink: "#111827",
@@ -19,8 +21,10 @@ const COLORS = {
   body: "#374151",
   border: "#E5E7EB",
   cardBg: "#F9FAFB",
-  rowAlt: "#F8FAFC",
-  accent: "#2563EB",
+  rowAlt: "#FEF2F2",
+  accent: "#DC2626",
+  accentDark: "#7F1D1D",
+  accentSoft: "#FCA5A5",
   success: "#22C55E",
   divider: "#E2E8F0",
 };
@@ -57,6 +61,19 @@ function fmtHours(mins) {
   return `${h}h ${m}m`;
 }
 
+// IMPORTANT: trip.fuel is maintained by the backend (/api/trips/:id/states
+// and /api/trips/:id/end) as the RUNNING SUM of every one of that trip's
+// states[].fuel entries — each state's fuel is set once when that state is
+// closed out, either by a state-crossing or by End Trip closing the final
+// state. So trip.fuel already *is* the trip's total fuel.
+//
+// The previous version of this report added t.fuel AND the sum of
+// states[].fuel together, which double-counted every gallon. The fix is
+// just to trust trip.fuel as the single source of truth per trip.
+function totalFuelForTrip(t) {
+  return t.fuel || 0;
+}
+
 // ---------------------------------------------------------------------------
 // Layout helpers
 // ---------------------------------------------------------------------------
@@ -72,7 +89,18 @@ function ensureSpace(doc, neededHeight) {
 
 function sectionHeading(doc, text) {
   ensureSpace(doc, 40);
-  doc.font("Helvetica-Bold").fontSize(12).fillColor(COLORS.ink).text(text);
+  // Small accent tick to the left of every heading — a quiet, repeated
+  // brand cue instead of a plain black label.
+  const tickX = doc.page.margins.left;
+  const tickY = doc.y + 2;
+  doc.roundedRect(tickX, tickY, 4, 13, 2).fill(COLORS.accent);
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(12)
+    .fillColor(COLORS.ink)
+    .text(text, tickX + 12, doc.y);
+
   const lineY = doc.y + 4;
   doc
     .moveTo(doc.page.margins.left, lineY)
@@ -88,7 +116,7 @@ function drawHeader(doc, { dateLabel, driver }) {
   const iconCx = startX + 10;
   const iconCy = doc.y + 12;
 
-  doc.circle(iconCx, iconCy, 10).fill(COLORS.success);
+  doc.circle(iconCx, iconCy, 10).fill(COLORS.accentDark);
   doc
     .save()
     .strokeColor("white")
@@ -142,6 +170,9 @@ function drawHeroStats(doc, stats) {
   const y = doc.y;
 
   doc.roundedRect(startX, y, width, bandHeight, 8).fill(COLORS.ink);
+  // Thin accent bar along the top of the band — ties the hero stats to the
+  // rest of the brand palette without competing with the white numerals.
+  doc.roundedRect(startX, y, width, 4, 2).fill(COLORS.accent);
 
   const colWidth = width / stats.length;
   stats.forEach((s, i) => {
@@ -160,12 +191,12 @@ function drawHeroStats(doc, stats) {
       .fillColor(s.accent || "white")
       .font("Helvetica-Bold")
       .fontSize(26)
-      .text(s.value, x, y + 14, { width: colWidth, align: "center" });
+      .text(s.value, x, y + 16, { width: colWidth, align: "center" });
     doc
       .fillColor("#CBD5E1")
       .font("Helvetica")
       .fontSize(9)
-      .text(s.label.toUpperCase(), x, y + 48, {
+      .text(s.label.toUpperCase(), x, y + 50, {
         width: colWidth,
         align: "center",
         characterSpacing: 0.5,
@@ -190,6 +221,8 @@ function drawSummaryCards(doc, cardData, cols = 4) {
     const y = startY + row * (rowHeight + gap);
 
     doc.roundedRect(x, y, colWidth, rowHeight, 6).fillAndStroke(COLORS.cardBg, COLORS.border);
+    // Small left accent edge on each card instead of a flat uniform border.
+    doc.roundedRect(x, y, 3, rowHeight, 1.5).fill(COLORS.accent);
     doc
       .fillColor(COLORS.subtext)
       .fontSize(8)
@@ -224,7 +257,7 @@ function drawTripsTable(doc, trips) {
   const rowPadding = 8;
 
   function drawTableHeader(y) {
-    doc.rect(startX, y, tableWidth, headerHeight).fill(COLORS.ink);
+    doc.rect(startX, y, tableWidth, headerHeight).fill(COLORS.accentDark);
     let x = startX;
     columns.forEach((c) => {
       doc
@@ -254,7 +287,10 @@ function drawTripsTable(doc, trips) {
     const route = `${t.startLocation?.formatted || "?"} to ${t.endLocation?.formatted || "In progress"}`;
     const odo = `${t.odometerBeginning ?? "—"}${t.odometerEnding ? ` – ${t.odometerEnding}` : ""}`;
     const miles = t.totalMiles ? `${t.totalMiles} mi` : "—";
-    const fuel = t.fuel ? `${t.fuel} gal` : "—";
+    // trip.fuel is already the rollup of every state this trip touched —
+    // see totalFuelForTrip() above. Do not add per-state fuel again here.
+    const tripFuel = totalFuelForTrip(t);
+    const fuel = tripFuel ? `${tripFuel} gal` : "—";
     const equip = [
       t.truck?.unitNumber ? `Unit ${t.truck.unitNumber}` : null,
       t.trailer?.trailerNumber ? `Trailer ${t.trailer.trailerNumber}` : null,
@@ -301,6 +337,159 @@ function drawTripsTable(doc, trips) {
   });
 
   doc.y = y + 16;
+}
+
+// Grouped by trip: each trip gets its own sub-heading and mini table —
+// one row per state it covered, with that state's mileage and fuel — then
+// a bolded "Trip Total" row. After every trip has its own block, a final
+// "All Trips" total row closes out the section. This mirrors how a driver
+// actually thinks about the day: trip by trip, state by state within it.
+//
+// Fuel note: each states[] entry's `fuel` is set once when that state is
+// closed — either by the next state-crossing, or by End Trip closing the
+// final open state. That means summing states[].fuel already gives the
+// trip's full fuel total; there is no separate "end of trip" fuel bucket
+// to add on top anymore (the previous version double-counted this).
+function drawFuelByStateSection(doc, trips) {
+  const startX = doc.page.margins.left;
+  const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const columns = [
+    { key: "state", label: "State / Location", width: 0.46 },
+    { key: "miles", label: "Mileage", width: 0.27 },
+    { key: "fuel", label: "Fuel", width: 0.27 },
+  ].map((c) => ({ ...c, width: c.width * tableWidth }));
+
+  const headerHeight = 20;
+  const rowHeight = 20;
+  const rowPadding = 6;
+
+  function drawTableHeader(y) {
+    doc.rect(startX, y, tableWidth, headerHeight).fill(COLORS.accentDark);
+    let x = startX;
+    columns.forEach((c) => {
+      doc
+        .fillColor("white")
+        .font("Helvetica-Bold")
+        .fontSize(8)
+        .text(c.label.toUpperCase(), x + 8, y + 6, { width: c.width - 12 });
+      x += c.width;
+    });
+    return y + headerHeight;
+  }
+
+  function drawRow(y, values, { alt = false, bold = false, shade = null } = {}) {
+    if (shade) {
+      doc.rect(startX, y, tableWidth, rowHeight).fill(shade);
+    } else if (alt) {
+      doc.rect(startX, y, tableWidth, rowHeight).fill(COLORS.rowAlt);
+    }
+    let x = startX;
+    columns.forEach((c) => {
+      doc
+        .fillColor(COLORS.ink)
+        .font(bold ? "Helvetica-Bold" : c.key === "state" ? "Helvetica-Bold" : "Helvetica")
+        .fontSize(9)
+        .text(values[c.key], x + 8, y + rowPadding - 4, { width: c.width - 12 });
+      x += c.width;
+    });
+    doc
+      .moveTo(startX, y + rowHeight)
+      .lineTo(startX + tableWidth, y + rowHeight)
+      .strokeColor(COLORS.border)
+      .lineWidth(0.5)
+      .stroke();
+    return y + rowHeight;
+  }
+
+  let grandTotalMiles = 0;
+  let grandTotalFuel = 0;
+
+  trips.forEach((t, tripIndex) => {
+    const states = t.states || [];
+
+    // Sub-heading for this trip, kept with its table (not orphaned at the
+    // bottom of a page with the table pushed to the next one).
+    ensureSpace(doc, 20 + headerHeight + rowHeight * (states.length + 2));
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10)
+      .fillColor(COLORS.accentDark)
+      .text(`Trip ${tripIndex + 1}: ${t.startLocation?.formatted || "?"} to  ${t.endLocation?.formatted || "In progress"}`);
+    doc.moveDown(0.4);
+
+    let y = drawTableHeader(doc.y);
+
+    let tripMiles = 0;
+    let tripFuel = 0;
+
+    if (states.length === 0) {
+      // No state-crossings on this trip — trip.fuel is the whole story,
+      // entered directly on End Trip.
+      const pageCountBefore = doc.bufferedPageRange().count;
+      ensureSpace(doc, rowHeight);
+      if (doc.bufferedPageRange().count !== pageCountBefore) y = drawTableHeader(doc.y);
+      tripFuel = t.fuel || 0;
+      y = drawRow(y, {
+        state: t.endLocation?.formatted || t.startLocation?.formatted || "—",
+        miles: t.totalMiles ? `${t.totalMiles} mi` : "—",
+        fuel: tripFuel ? `${tripFuel} gal` : "—",
+      });
+      tripMiles = t.totalMiles || 0;
+    } else {
+      states.forEach((s, i) => {
+        const miles =
+          s.endOdometer != null
+            ? s.endOdometer - s.startOdometer
+            : t.odometerEnding != null
+            ? t.odometerEnding - s.startOdometer
+            : null;
+        if (miles != null) tripMiles += miles;
+        tripFuel += s.fuel || 0;
+
+        const pageCountBefore = doc.bufferedPageRange().count;
+        ensureSpace(doc, rowHeight + headerHeight);
+        if (doc.bufferedPageRange().count !== pageCountBefore) y = drawTableHeader(doc.y);
+
+        y = drawRow(
+          y,
+          {
+            state: s.location?.formatted || "—",
+            miles: miles != null ? `${miles} mi` : "—",
+            fuel: s.fuel ? `${s.fuel} gal` : "—",
+          },
+          { alt: i % 2 === 1 }
+        );
+      });
+    }
+
+    const pageCountBefore = doc.bufferedPageRange().count;
+    ensureSpace(doc, rowHeight + headerHeight);
+    if (doc.bufferedPageRange().count !== pageCountBefore) y = drawTableHeader(doc.y);
+    y = drawRow(
+      y,
+      {
+        state: `Trip ${tripIndex + 1} Total`,
+        miles: `${t.totalMiles ?? tripMiles} mi`,
+        fuel: `${tripFuel} gal`,
+      },
+      { bold: true, shade: COLORS.cardBg }
+    );
+
+    grandTotalMiles += t.totalMiles ?? tripMiles;
+    grandTotalFuel += tripFuel;
+
+    doc.y = y + 16;
+  });
+
+  // Final total across every trip in the day.
+  ensureSpace(doc, headerHeight + 10);
+  let y = drawTableHeader(doc.y);
+  drawRow(
+    y,
+    { state: "All Trips — Total", miles: `${grandTotalMiles} mi`, fuel: `${grandTotalFuel} gal` },
+    { bold: true, shade: "#FEE2E2" }
+  );
+  doc.y = y + rowHeight + 16;
 }
 
 // pdfkit has no built-in pie-slice primitive, so each wedge is approximated
@@ -441,7 +630,11 @@ export async function GET() {
   const trips = dailyLog.trips || [];
 
   const totalMiles = trips.reduce((sum, t) => sum + (t.totalMiles || 0), 0);
-  const totalFuel = trips.reduce((sum, t) => sum + (t.fuel || 0), 0);
+  // Grand total fuel = sum of each trip's rolled-up fuel (trip.fuel), which
+  // the backend already keeps in sync with every state-crossing and End
+  // Trip. Do NOT also add per-state fuel here — that was the source of the
+  // old double-counting bug.
+  const totalFuel = trips.reduce((sum, t) => sum + totalFuelForTrip(t), 0);
   const startOdometer = trips[0]?.odometerBeginning ?? null;
   const endOdometer = [...trips].reverse().find((t) => t.odometerEnding != null)?.odometerEnding ?? null;
 
@@ -477,7 +670,7 @@ export async function GET() {
 
   drawHeroStats(doc, [
     { label: "Total Miles", value: totalMiles.toLocaleString() },
-    { label: "Driving Time", value: fmtHours(hoursByStatus.driving), accent: "#FCA5A5" },
+    { label: "Driving Time", value: fmtHours(hoursByStatus.driving), accent: COLORS.accentSoft },
     { label: "Total Fuel", value: `${totalFuel} gal` },
   ]);
 
@@ -505,6 +698,9 @@ export async function GET() {
 
   sectionHeading(doc, "Trips");
   drawTripsTable(doc, trips);
+
+  sectionHeading(doc, "Mileage & Fuel by State");
+  drawFuelByStateSection(doc, trips);
 
   drawFooters(doc);
 

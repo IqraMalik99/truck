@@ -3,7 +3,7 @@ import {connectDB} from "../../../lib/db";
 import { DriverDailyLog } from "../../../models/schema";
 import { getCurrentDriver } from "../../../lib/getCurrentDriver";
 
-const VALID_STATUSES = ["off_duty", "sleeper_berth", "driving", "on_duty"];
+const VALID_STATUSES = ["off_duty", "sleeper", "driving", "on_duty"];
 
 export async function POST(request) {
   await connectDB();

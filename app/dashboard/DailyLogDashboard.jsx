@@ -10,7 +10,7 @@ import SearchableSelect from "../components/Searchableselect";
   GET    /api/daily-log/today   -> { log: DriverDailyLog | null, trips: TripSheet[] }
   POST   /api/daily-log/start   -> { log }   body: {}
   POST   /api/trips             -> TripSheet body: { dailyLogId, startLocation, truck, trailer, odometerBeginning }
-  POST   /api/trips/:id/states  -> TripSheet body: { odometerAtStateLine, nextLocation }
+  POST   /api/trips/:id/states  -> TripSheet body: { odometerAtStateLine, fuel, nextLocation }
   PATCH  /api/trips/:id/end     -> TripSheet body: { endLocation, odometerEnding, fuel }
   POST   /api/daily-log/status  -> { entry } body: { dailyLogId, status, from, to, purpose }
   POST   /api/daily-log/end     -> { log }   body: { dailyLogId }
@@ -26,6 +26,18 @@ import SearchableSelect from "../components/Searchableselect";
   backend (/api/trips) should reject a missing trailer just like it already
   rejects a missing truck.
 
+  Fuel model (backend rolls this up — frontend just displays it):
+    - Each entry in trip.states[] gets a `fuel` value once it is CLOSED —
+      either because the driver crossed into the next state (fuel typed on
+      that crossing form belongs to the state being left), or because the
+      trip ended while that state was still open (fuel typed on End Trip
+      belongs to that last state).
+    - trip.fuel is always the sum of every state's fuel — the backend keeps
+      it in sync on every state-crossing and on End Trip. If a trip never
+      crosses a state line, trip.fuel is just whatever was entered on End Trip.
+    - Because of this, totals.fuel below must NOT add trip.fuel and the
+      per-state fuel together — trip.fuel already IS that sum.
+
   Color scale used across this file:
     #DC2626 (red-600)  — primary / normal actions
     #B91C1C (red-700)  — hover state
@@ -35,7 +47,7 @@ import SearchableSelect from "../components/Searchableselect";
 
 const STATUS_OPTIONS = [
   { value: "off_duty", label: "Off Duty", color: "#94A3B8" },
-  { value: "sleeper_berth", label: "Sleeper Berth", color: "#8B5CF6" },
+  { value: "sleeper", label: "Sleeper", color: "#8B5CF6" },
   { value: "driving", label: "Driving", color: "#DC2626" },
   { value: "on_duty", label: "On Duty (Not Driving)", color: "#22C55E" },
 ];
@@ -217,6 +229,8 @@ export default function DailyLogDashboard() {
   // Records that the truck crossed into a new state/province mid-trip. The
   // single odometer reading sent here closes the previous states[] entry AND
   // opens the next one — the driver never types the same number twice.
+  // Fuel (if any was added before crossing) is recorded on the state entry
+  // being closed out.
   async function addTripState(tripId, payload) {
     setError("");
     const res = await fetch(`/api/trips/${tripId}/states`, {
@@ -328,6 +342,10 @@ export default function DailyLogDashboard() {
 
   const totals = useMemo(() => {
     const miles = trips.reduce((sum, t) => sum + (t.totalMiles || 0), 0);
+    // trip.fuel is now maintained by the backend as the SUM of that trip's
+    // states[].fuel (each state's fuel is set when the state is closed out,
+    // either by a state-crossing or by End Trip). Adding the per-state fuel
+    // again here would double-count it, so trip.fuel alone is the total.
     const fuel = trips.reduce((sum, t) => sum + (t.fuel || 0), 0);
     const byStatus = { off_duty: 0, sleeper_berth: 0, driving: 0, on_duty: 0 };
     statusChanges.forEach((s) => {
@@ -387,7 +405,7 @@ export default function DailyLogDashboard() {
                   onClick={() => setShowTripForm((v) => !v)}
                   className="w-full sm:w-auto text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] px-4 py-2 rounded-lg transition"
                 >
-                  + Add Another Trip
+                  {trips.length === 0 ? "+ Add a Trip" : "+ Add Another Trip"}
                 </button>
               )}
             </div>
@@ -731,6 +749,7 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
             {trip.odometerBeginning}
             {trip.odometerEnding ? ` – ${trip.odometerEnding}` : ""}
             {trip.totalMiles ? ` · ${trip.totalMiles} mi` : ""}
+            {trip.fuel ? ` · ${trip.fuel} gal total` : ""}
           </p>
         </div>
         {isOpen && !dayEnded && (
@@ -744,12 +763,13 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
         {!isOpen && <span className="text-xs font-mono text-emerald-600">Completed</span>}
       </div>
 
-      {/* Per-trip state-by-state odometer breakdown */}
+      {/* Per-trip state-by-state odometer + fuel breakdown */}
       {states.length > 0 && (
         <div className="mt-3 space-y-1">
           {states.map((s, i) => (
             <p key={i} className="text-xs font-mono text-slate-500 break-words">
               {s.location?.formatted}: {s.startOdometer} – {s.endOdometer ?? "…"}
+              {s.fuel ? ` · ${s.fuel} gal` : ""}
             </p>
           ))}
         </div>
@@ -769,6 +789,11 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
           onCancel={() => setAddingState(false)}
           onSubmit={submitState}
           saving={savingState}
+          leavingLocationLabel={
+            states.length > 0
+              ? states[states.length - 1].location?.formatted
+              : trip.startLocation?.formatted
+          }
         />
       )}
 
@@ -789,7 +814,7 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
               className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
             />
           </Field>
-          <Field label="Fuel added (gal)">
+          <Field label={hasOpenState ? `Fuel added in ${states[states.length - 1].location?.formatted || "this state"} (gal)` : "Fuel added (gal)"}>
             <input
               type="number"
               value={fuel}
@@ -833,8 +858,11 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
 // Single-odometer state crossing form. The one number entered here becomes
 // BOTH the endOdometer of the state being left and the startOdometer of the
 // state being entered — the driver never has to type the same reading twice.
-function StateForm({ onCancel, onSubmit, saving }) {
+// Fuel (optional) is recorded against the state being left, since it was
+// added before the truck crossed the line.
+function StateForm({ onCancel, onSubmit, saving, leavingLocationLabel }) {
   const [odometer, setOdometer] = useState("");
+  const [fuel, setFuel] = useState("");
   const [city, setCity] = useState("");
   const [stateName, setStateName] = useState("");
 
@@ -842,6 +870,7 @@ function StateForm({ onCancel, onSubmit, saving }) {
     e.preventDefault();
     onSubmit({
       odometerAtStateLine: Number(odometer),
+      fuel: fuel ? Number(fuel) : undefined,
       nextLocation: {
         city,
         state: stateName,
@@ -861,6 +890,14 @@ function StateForm({ onCancel, onSubmit, saving }) {
           required
           value={odometer}
           onChange={(e) => setOdometer(e.target.value)}
+          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+        />
+      </Field>
+      <Field label={leavingLocationLabel ? `Fuel added in ${leavingLocationLabel} (gal)` : "Fuel added before crossing (gal)"}>
+        <input
+          type="number"
+          value={fuel}
+          onChange={(e) => setFuel(e.target.value)}
           className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
         />
       </Field>
@@ -922,7 +959,7 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
         truck: truck || undefined,
         trailer,
         odometerBeginning: Number(odometerBeginning),
-        // destination and fuel are captured on End Trip instead
+        // destination and fuel are captured on End Trip / state crossings instead
       });
     } finally {
       setSaving(false);

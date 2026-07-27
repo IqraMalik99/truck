@@ -36,7 +36,7 @@ export async function PATCH(request, { params }) {
     return NextResponse.json({ error: "Ending location is required" }, { status: 400 });
   }
 
-  const endOdometer = Number(odometerEnding);
+const endOdometer = Number(odometerEnding);
 
   if (trip.states && trip.states.length > 0) {
     const last = trip.states[trip.states.length - 1];
@@ -47,13 +47,24 @@ export async function PATCH(request, { params }) {
       );
     }
     last.endOdometer = endOdometer;
+    // fuel entered on End Trip covers the final state the truck was sitting in
+    last.fuel = fuel != null && fuel !== "" ? Number(fuel) : last.fuel;
   }
 
   trip.odometerEnding = endOdometer;
   trip.endLocation = { ...endLocation, formatted: formatLocation(endLocation) };
-  trip.fuel = fuel != null && fuel !== "" ? Number(fuel) : undefined;
   trip.enddate = new Date();
   trip.totalMiles = trip.odometerEnding - trip.odometerBeginning;
+
+  // trip.fuel is always the sum of every state's fuel. If the trip never
+  // crossed a state line, there's no states[] to sum, so the End Trip fuel
+  // field is the whole story.
+  if (trip.states && trip.states.length > 0) {
+    trip.fuel = trip.states.reduce((sum, s) => sum + (s.fuel || 0), 0);
+  } else {
+    trip.fuel = fuel != null && fuel !== "" ? Number(fuel) : undefined;
+  }
+
   await trip.save();
 
   // keep the truck's current odometer in sync
