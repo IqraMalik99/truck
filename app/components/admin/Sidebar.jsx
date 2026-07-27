@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useSession, signOut } from "next-auth/react";
 
 const NAV_ITEMS = [
   { href: "/admin", label: "Dashboard", icon: "grid" },
@@ -73,14 +74,38 @@ function CloseIcon(props) {
   );
 }
 
+function SignOutIcon(props) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <polyline points="16 17 21 12 16 7" />
+      <line x1="21" y1="12" x2="9" y2="12" />
+    </svg>
+  );
+}
+
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { data: session } = useSession();
   const [open, setOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   // Close the drawer whenever the route changes (e.g. tapping a nav link).
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
+
+  async function handleSignOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      // redirect: false lets us control navigation explicitly.
+      await signOut({ redirect: false });
+    } finally {
+      router.push("/sign-in");
+    }
+  }
 
   return (
     <>
@@ -192,7 +217,32 @@ export default function Sidebar() {
           <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "#475569" }}>
             Signed in as
           </div>
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: "#e2e8f0", marginTop: 2 }}>Admin</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: "#e2e8f0", marginTop: 2 }}>
+            {session?.user?.name || session?.user?.email || "Admin"}
+          </div>
+
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              marginTop: 12,
+              padding: "8px 10px",
+              borderRadius: 6,
+              border: "1px solid #1f2937",
+              background: "transparent",
+              color: signingOut ? "#475569" : "#94a3b8",
+              fontSize: 12.5,
+              fontWeight: 500,
+              cursor: signingOut ? "default" : "pointer",
+            }}
+          >
+            <SignOutIcon />
+            {signingOut ? "Signing out..." : "Sign out"}
+          </button>
         </div>
       </aside>
 
