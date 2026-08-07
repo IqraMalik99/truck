@@ -1,32 +1,24 @@
-
-import { Geist, Geist_Mono } from "next/font/google";
-import Providers from "./lib/provider";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import { colors, fonts } from "./lib/theme";
+import Providers from "./provider";
 
 export const metadata = {
-  title: "Truck Logging",
-  description: "Truck Logging",
+  title: "Truck Logging | Industrial Logistics & Fleet Management",
+  description:
+    "Digitize your fleet management with LOGIVER - driver logs, admin dashboards, and fleet analytics.",
 };
 
-export default function RootLayout({
-  children
-}) {
+export default function RootLayout({ children }) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col" style={{background: "#f4f6f9"}}>
+    <html lang="en">
+      <body
+        style={{
+          backgroundColor: colors.background,
+          color: colors.onBackground,
+          fontFamily: fonts.body,
+          overflowX: "hidden",
+        }}
+      >
         <Providers>
           {children}
         </Providers>

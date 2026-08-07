@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "next-auth/react";
 import { Truck, Mail, Lock, Loader2 } from "lucide-react";
+import { signIn, getSession } from "next-auth/react";
 
 export default function SignInPage() {
   const [form, setForm] = useState({ email: "", password: "" });
@@ -26,6 +26,7 @@ export default function SignInPage() {
       password: form.password,
     });
 
+
     if (res?.error) {
       setStatus("error");
       setErrorMsg(
@@ -36,12 +37,20 @@ export default function SignInPage() {
       return;
     }
 
-    window.location.href = "/dashboard";
+    const session = await getSession();
+
+    if (session?.user?.role === "admin") {
+      window.location.href = "/admin";
+    } else {
+      window.location.href = "/dashboard";
+    }
   }
 
   async function handleGoogle() {
     setGoogleLoading(true);
-    await signIn("google", { callbackUrl: "/dashboard" });
+    await signIn("google", {
+      callbackUrl: "/auth/redirect",
+    });
   }
 
   return (

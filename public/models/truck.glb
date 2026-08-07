@@ -1,0 +1,3 @@
+const MODEL_SCALE = 1;
+const MODEL_Y_OFFSET = 0;
+const MODEL_ROTATION_Y_OFFSET = Math.PI;

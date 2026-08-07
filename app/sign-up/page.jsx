@@ -40,7 +40,7 @@ export default function SignUpPage() {
         setStatus("error");
         setErrorMsg(data.message || "Something went wrong. Try again.");
         return;
-      }else{
+      } else {
         router.push("/sign-in");
       }
 
@@ -125,6 +125,7 @@ export default function SignUpPage() {
               value={form.phone}
               onChange={handleChange}
               placeholder="Phone"
+              required
             />
 
             <Field
@@ -133,6 +134,7 @@ export default function SignUpPage() {
               value={form.licenseNumber}
               onChange={handleChange}
               placeholder="License number"
+              required
             />
 
             <Field
@@ -141,6 +143,7 @@ export default function SignUpPage() {
               value={form.carrierName}
               onChange={handleChange}
               placeholder="Carrier name"
+              required
             />
 
             {status === "error" && (
