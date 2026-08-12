@@ -7,6 +7,7 @@ const DriverSchema = new Schema({
     licenseNumber: String,
     phone: String,
     carrierName: String,
+    timezone: { type: String, default: "UTC" },
      role: { type: String, enum: ["driver", "admin"], default: "driver" }
 
 }, { timestamps: true });

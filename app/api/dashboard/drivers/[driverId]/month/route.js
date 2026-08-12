@@ -56,8 +56,13 @@ export async function GET(request, { params }) {
     })
       .populate({
         path: "trips",
+        // NOTE: TripSheet has no `destination`/`startState`/`endState` fields —
+        // location is stored as `startLocation` / `endLocation` (LocationSchema
+        // objects with .city/.state/.country/.formatted). Selecting the old,
+        // nonexistent field names silently returned undefined, which is why
+        // the monthly view always showed "Untitled destination".
         select:
-          "destination startState endState totalMiles fuel odometerBeginning odometerEnding startdate enddate truck trailer",
+          "startLocation endLocation totalMiles fuel odometerBeginning odometerEnding startdate enddate truck trailer",
         populate: [
           { path: "truck", select: "unitNumber currentOdometer" },
           { path: "trailer", select: "trailerNumber" },

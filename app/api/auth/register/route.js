@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 export async function POST(req) {
   await connectDB();
 
-  const { name, email, password, phone, licenseNumber, carrierName=""} = await req.json();
+  const { name, email, password, phone, licenseNumber="", carrierName="",timezone="UTC"} = await req.json();
 
   const existingDriver = await Driver.findOne({ email });
   if (existingDriver) {
@@ -20,7 +20,8 @@ export async function POST(req) {
     password: hashedPassword,
     phone,
     licenseNumber,
-    carrierName
+    carrierName,
+    timezone
   });
 
   return Response.json({ message: "Driver created", driver }, { status: 201 });

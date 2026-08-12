@@ -130,11 +130,8 @@ export default function LogsPage() {
           read as just a translucent grey slab. */}
       <div
         aria-hidden
-        className="fixed inset-0 -z-10 bg-[#F7F5F5]"
-        style={{
-          backgroundImage:
-            "radial-gradient(60rem 30rem at 15% -10%, rgba(220,38,38,0.14), transparent 60%), radial-gradient(50rem 25rem at 100% 0%, rgba(248,113,113,0.12), transparent 55%)",
-        }}
+        className="fixed inset-0 -z-10 "
+       
       ></div>
 
       {/* Floating glassmorphism navbar — minimal, narrow, scales down on mobile */}

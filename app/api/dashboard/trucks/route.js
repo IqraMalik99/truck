@@ -39,3 +39,27 @@ export async function GET(request) {
     total,
   });
 }
+
+
+export async function POST(request) {
+  await connectDB();
+  const body = await request.json().catch(() => ({}));
+  const unitNumber = typeof body.unitNumber === "string" ? body.unitNumber.trim() : "";
+  const hasOdometer = body.currentOdometer !== undefined && body.currentOdometer !== "";
+  const currentOdometer = hasOdometer ? Number(body.currentOdometer) : undefined;
+
+  if (!unitNumber) {
+    return NextResponse.json({ error: "Unit number is required" }, { status: 400 });
+  }
+  if (hasOdometer && (!Number.isFinite(currentOdometer) || currentOdometer < 0)) {
+    return NextResponse.json({ error: "Odometer must be a valid, non-negative number" }, { status: 400 });
+  }
+
+  const existing = await Truck.findOne({ unitNumber });
+  if (existing) {
+    return NextResponse.json({ error: "That unit number is already in use" }, { status: 409 });
+  }
+
+  const truck = await Truck.create({ unitNumber, ...(hasOdometer ? { currentOdometer } : {}) });
+  return NextResponse.json({ truck }, { status: 201 });
+}

@@ -3,13 +3,16 @@
 import { useEffect, useMemo, useState } from "react";
 import StatusTimeline from "../components/admin/Statustimeline";
 import SearchableSelect from "../components/Searchableselect";
+import DateNavigator from "../components/admin/DateNavigator";
+import { isDateEditable, relativeDayLabel, startOfDay, toDateKey } from "../lib/editWindow";
 
 /*
   Expected API contract (build these routes when ready):
 
-  GET    /api/daily-log/today   -> { log: DriverDailyLog | null, trips: TripSheet[] }
-  POST   /api/daily-log/start   -> { log }   body: {}
+  GET    /api/daily-log/day?date=YYYY-MM-DD  -> { log: DriverDailyLog | null, trips: TripSheet[] }
+  POST   /api/daily-log/start   -> { log }   body: { date }
   POST   /api/trips             -> TripSheet body: { dailyLogId, startLocation, truck, trailer, odometerBeginning }
+  DELETE /api/trips/:id         -> { success: true }   // driver can delete a trip while the day is still editable
   POST   /api/trips/:id/states  -> TripSheet body: { odometerAtStateLine, fuel, nextLocation }
   PATCH  /api/trips/:id/end     -> TripSheet body: { endLocation, odometerEnding, fuel }
   POST   /api/daily-log/status  -> { entry } body: { dailyLogId, status, from, to, purpose }
@@ -17,14 +20,15 @@ import SearchableSelect from "../components/Searchableselect";
   GET    /api/trucks            -> Truck[]
   GET    /api/trailers          -> Trailer[]
 
+  IMPORTANT: the frontend only greys out non-editable dates for UX — the API
+  must independently re-check the date against the same window (see
+  lib/editWindow.js -> isDateEditable) on every write route (start, trips,
+  delete-trip, states, end-trip, status, end-day) and reject with 403 if the
+  log's date has fallen outside it. Never trust the client for this.
+
   Location shape used everywhere below (works whether the region has a
   "state"/province or not — some countries only have a city):
     { city, state, country, formatted }
-
-  Note: destination has been dropped — endLocation is now the record of
-  where the trip actually ended. Trailer is required, same as truck: the
-  backend (/api/trips) should reject a missing trailer just like it already
-  rejects a missing truck.
 
   Fuel model (backend rolls this up — frontend just displays it):
     - Each entry in trip.states[] gets a `fuel` value once it is CLOSED —
@@ -33,8 +37,7 @@ import SearchableSelect from "../components/Searchableselect";
       trip ended while that state was still open (fuel typed on End Trip
       belongs to that last state).
     - trip.fuel is always the sum of every state's fuel — the backend keeps
-      it in sync on every state-crossing and on End Trip. If a trip never
-      crosses a state line, trip.fuel is just whatever was entered on End Trip.
+      it in sync on every state-crossing and on End Trip.
     - Because of this, totals.fuel below must NOT add trip.fuel and the
       per-state fuel together — trip.fuel already IS that sum.
 
@@ -52,8 +55,8 @@ const STATUS_OPTIONS = [
   { value: "on_duty", label: "On Duty (Not Driving)", color: "#22C55E" },
 ];
 
-function todayLabel() {
-  return new Date().toLocaleDateString(undefined, {
+function dateLabel(date) {
+  return date.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
     day: "numeric",
@@ -76,16 +79,10 @@ function fmtHours(mins) {
   return `${h}h ${m}m`;
 }
 
-// Turns whatever pieces we have into the one display string the UI/DB uses.
-// Some countries only have a city, some have city+state, some just a country.
 function formatLocation({ city, state, country } = {}) {
   return [city, state].filter(Boolean).join(", ") || country || "";
 }
 
-// Reverse-geocodes the driver's current position into a full location object.
-// Uses OpenStreetMap's Nominatim (no API key needed, works worldwide — not
-// just the US). Swap for Google Geocoding / Mapbox later if you need higher
-// rate limits or accuracy guarantees.
 async function fetchCurrentLocation() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
@@ -102,7 +99,6 @@ async function fetchCurrentLocation() {
           if (!res.ok) throw new Error("Reverse geocoding failed");
           const data = await res.json();
           const addr = data.address || {};
-          // not every country's response has all of these — take whatever exists
           const city =
             addr.city || addr.town || addr.village || addr.county || addr.municipality || "";
           const state = addr.state || addr.region || addr.province || "";
@@ -118,8 +114,6 @@ async function fetchCurrentLocation() {
   });
 }
 
-// Reads the backend's actual { error: "..." } message so the UI can show
-// what the API really said instead of a generic fallback string.
 async function readError(res, fallback) {
   try {
     const data = await res.json();
@@ -130,6 +124,7 @@ async function readError(res, fallback) {
 }
 
 export default function DailyLogDashboard() {
+  const [selectedDate, setSelectedDate] = useState(() => startOfDay(new Date()));
   const [loading, setLoading] = useState(true);
   const [dailyLog, setDailyLog] = useState(null);
   const [trips, setTrips] = useState([]);
@@ -143,25 +138,61 @@ export default function DailyLogDashboard() {
   const [endingDay, setEndingDay] = useState(false);
   const [downloadingReport, setDownloadingReport] = useState(false);
   const [reopeningDay, setReopeningDay] = useState(false);
+
+  const [timeZone, setTimeZone] = useState("UTC");
+
+  const isToday = toDateKey(selectedDate, timeZone) === toDateKey(new Date(), timeZone);
+  const editable = isDateEditable(selectedDate, timeZone);
+
   useEffect(() => {
-    fetchToday();
     fetchFleet();
+    fetchTimeZone();
   }, []);
 
-  async function fetchToday() {
+  useEffect(() => {
+    setError("");
+    setShowTripForm(false);
+    setShowStatusForm(false);
+    fetchLogForDate(selectedDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate]);
+
+  async function fetchTimeZone() {
+    try {
+      const res = await fetch("/api/auth/me");
+      if (res.ok) {
+        const data = await res.json();
+        setTimeZone(data.timezone || "UTC");
+      }
+    } catch {
+      // stay on "UTC" fallback until it loads / if it fails
+    }
+  }
+
+  async function fetchLogForDate(date) {
     setLoading(true);
     try {
-      const res = await fetch("/api/daily-log/today");
+      const res = await fetch(`/api/daily-log/day?date=${toDateKey(date, timeZone)}`);
       if (res.ok) {
         const data = await res.json();
         if (data?.log) {
           setDailyLog(data.log);
           setTrips(data.trips || data.log.trips || []);
           setStatusChanges(data.log.statusChanges || []);
+        } else {
+          setDailyLog(null);
+          setTrips([]);
+          setStatusChanges([]);
         }
+      } else {
+        setDailyLog(null);
+        setTrips([]);
+        setStatusChanges([]);
       }
     } catch {
-      // backend not built yet — fine, dashboard just shows "Start Your Day"
+      setDailyLog(null);
+      setTrips([]);
+      setStatusChanges([]);
     }
     setLoading(false);
   }
@@ -180,14 +211,18 @@ export default function DailyLogDashboard() {
     setError("");
     setStartingDay(true);
     try {
-      const res = await fetch("/api/daily-log/start", { method: "POST" });
-      if (!res.ok) throw new Error(await readError(res, "Couldn't start the day. Check your connection and try again."));
+      const res = await fetch("/api/daily-log/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: toDateKey(selectedDate, timeZone) }),
+      });
+      if (!res.ok) throw new Error(await readError(res, "Couldn't start this day. Check your connection and try again."));
       const data = await res.json();
       setDailyLog(data.log);
       setTrips([]);
       setStatusChanges([]);
     } catch (err) {
-      setError(err.message || "Couldn't start the day. Check your connection and try again.");
+      setError(err.message || "Couldn't start this day. Check your connection and try again.");
     } finally {
       setStartingDay(false);
     }
@@ -226,11 +261,19 @@ export default function DailyLogDashboard() {
     setTrips((prev) => prev.map((t) => (t._id === tripId ? updated : t)));
   }
 
-  // Records that the truck crossed into a new state/province mid-trip. The
-  // single odometer reading sent here closes the previous states[] entry AND
-  // opens the next one — the driver never types the same number twice.
-  // Fuel (if any was added before crossing) is recorded on the state entry
-  // being closed out.
+  // Deletes a trip entirely — the server re-checks ownership and the edit
+  // window before actually removing it, same as every other write route.
+  async function deleteTrip(tripId) {
+    setError("");
+    const res = await fetch(`/api/trips/${tripId}`, { method: "DELETE" });
+    if (!res.ok) {
+      const message = await readError(res, "Couldn't delete the trip. Try again.");
+      setError(message);
+      throw new Error(message);
+    }
+    setTrips((prev) => prev.filter((t) => t._id !== tripId));
+  }
+
   async function addTripState(tripId, payload) {
     setError("");
     const res = await fetch(`/api/trips/${tripId}/states`, {
@@ -271,14 +314,14 @@ export default function DailyLogDashboard() {
     setError("");
     const openTrip = trips.find((t) => !t.enddate && !t.odometerEnding);
     if (openTrip) {
-      setError(`End the trip to ${openTrip.endLocation?.formatted || "its destination"} before ending the day.`);
+      setError(`End the trip to ${openTrip.endLocation?.formatted || "its destination"} before ending this day.`);
       return;
     }
     const openState = trips
       .flatMap((t) => t.states || [])
       .find((s) => s.endOdometer == null);
     if (openState) {
-      setError(`Close out the state entry for ${openState.location?.formatted || "an open state"} before ending the day.`);
+      setError(`Close out the state entry for ${openState.location?.formatted || "an open state"} before ending this day.`);
       return;
     }
     setEndingDay(true);
@@ -288,11 +331,11 @@ export default function DailyLogDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dailyLogId: dailyLog?._id, statusChanges }),
       });
-      if (!res.ok) throw new Error(await readError(res, "Couldn't end the day. Try again."));
+      if (!res.ok) throw new Error(await readError(res, "Couldn't end this day. Try again."));
       const data = await res.json();
       setDailyLog(data.log);
     } catch (err) {
-      setError(err.message || "Couldn't end the day. Try again.");
+      setError(err.message || "Couldn't end this day. Try again.");
     } finally {
       setEndingDay(false);
     }
@@ -302,31 +345,33 @@ export default function DailyLogDashboard() {
     setError("");
     setReopeningDay(true);
     try {
-      const res = await fetch("/api/daily-log/re-open", { method: "POST" });
-      if (!res.ok) throw new Error(await readError(res, "Couldn't reopen the day. Try again."));
+      const res = await fetch("/api/daily-log/re-open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dailyLogId: dailyLog?._id }),
+      });
+      if (!res.ok) throw new Error(await readError(res, "Couldn't reopen this day. Try again."));
       const data = await res.json();
       setDailyLog(data.log);
       setTrips(data.trips || data.log.trips || []);
     } catch (err) {
-      setError(err.message || "Couldn't reopen the day. Try again.");
+      setError(err.message || "Couldn't reopen this day. Try again.");
     } finally {
       setReopeningDay(false);
     }
   }
 
-  // Streams the PDF report back from the server and saves it as a file —
-  // only meaningful once the day is closed, since that's when totals are final.
   async function downloadReport() {
     if (!dailyLog?._id) return;
     setError("");
     setDownloadingReport(true);
     try {
-      const res = await fetch(`/api/daily-log/report`);
+      const res = await fetch(`/api/daily-log/report?dailyLogId=${dailyLog._id}`);
       if (!res.ok) throw new Error(await readError(res, "Couldn't generate the report. Try again."));
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
-      const dateStr = new Date(dailyLog.date || Date.now()).toISOString().slice(0, 10);
+      const dateStr = toDateKey(new Date(dailyLog.date || selectedDate), timeZone);
       a.href = url;
       a.download = `daily-log-${dateStr}.pdf`;
       document.body.appendChild(a);
@@ -342,10 +387,6 @@ export default function DailyLogDashboard() {
 
   const totals = useMemo(() => {
     const miles = trips.reduce((sum, t) => sum + (t.totalMiles || 0), 0);
-    // trip.fuel is now maintained by the backend as the SUM of that trip's
-    // states[].fuel (each state's fuel is set when the state is closed out,
-    // either by a state-crossing or by End Trip). Adding the per-state fuel
-    // again here would double-count it, so trip.fuel alone is the total.
     const fuel = trips.reduce((sum, t) => sum + (t.fuel || 0), 0);
     const byStatus = { off_duty: 0, sleeper_berth: 0, driving: 0, on_duty: 0 };
     statusChanges.forEach((s) => {
@@ -355,198 +396,223 @@ export default function DailyLogDashboard() {
   }, [trips, statusChanges]);
 
   const dayEnded = !!dailyLog?.dayEnded;
-
-  if (loading) {
-    return (
-      <div className="min-h-[50vh] flex items-center justify-center">
-        <p className="text-sm text-slate-500 font-mono">Loading today's log…</p>
-      </div>
-    );
-  }
+  const canEdit = editable && !dayEnded;
 
   return (
     <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-lg font-semibold">{dateLabel(selectedDate)}</h1>
+          {!isToday && (
+            <p className="text-xs text-slate-400">
+              Viewing a past day{editable ? " — still open for edits" : " — read-only, outside the edit window"}.
+            </p>
+          )}
+        </div>
+        <DateNavigator selectedDate={selectedDate} onSelect={setSelectedDate} timeZone={timeZone} />
+      </div>
+
       {error && (
         <div className="bg-red-50 border border-red-200 text-[#7F1D1D] text-sm rounded-lg px-4 py-3">
           {error}
         </div>
       )}
 
-      {/* Not started yet */}
-      {!dailyLog && (
-        <div className="bg-white rounded-xl border border-slate-200 p-6 sm:p-10 text-center space-y-4">
-          <p className="text-slate-500 text-sm">You haven't started today's log yet.</p>
-          <button
-            onClick={startDay}
-            disabled={startingDay}
-            className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-6 py-3 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed transition"
-          >
-            {startingDay ? "Starting…" : "Start Your Day"}
-          </button>
+      {loading ? (
+        <div className="min-h-[30vh] flex items-center justify-center">
+          <p className="text-sm text-slate-500 font-mono">Loading log…</p>
         </div>
-      )}
-
-      {dailyLog && (
+      ) : (
         <>
-          {/* Summary strip */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <SummaryCard label="Trips today" value={trips.length} />
-            <SummaryCard label="Total miles" value={totals.miles.toLocaleString()} />
-            <SummaryCard label="Fuel logged" value={`${totals.fuel} gal`} />
-            <SummaryCard label="Driving time" value={fmtHours(totals.byStatus.driving)} highlight />
-          </div>
-
-          {/* Trips */}
-          <section className="bg-white rounded-xl border border-slate-200">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-4 border-b border-slate-100">
-              <h2 className="font-semibold">Trips today</h2>
-              {!dayEnded && (
+          {!dailyLog && (
+            <div className="bg-white rounded-xl border border-slate-200 p-6 sm:p-10 text-center space-y-4">
+              <p className="text-slate-500 text-sm">
+                {isToday
+                  ? "You haven't started today's log yet."
+                  : editable
+                  ? "No log was started for this day yet."
+                  : "No log exists for this day, and it's outside the window where a new one can be started."}
+              </p>
+              {editable && (
                 <button
-                  onClick={() => setShowTripForm((v) => !v)}
-                  className="w-full sm:w-auto text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] px-4 py-2 rounded-lg transition"
+                  onClick={startDay}
+                  disabled={startingDay}
+                  className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-6 py-3 rounded-full hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed transition"
                 >
-                  {trips.length === 0 ? "+ Add a Trip" : "+ Add Another Trip"}
+                  {startingDay ? "Starting…" : isToday ? "Start Your Day" : "Start This Day's Log"}
                 </button>
               )}
-            </div>
-
-            {showTripForm && (
-              <TripForm
-                trucks={trucks}
-                trailers={trailers}
-                onCancel={() => setShowTripForm(false)}
-                onSubmit={createTrip}
-              />
-            )}
-
-            <div className="divide-y divide-slate-100">
-              {trips.length === 0 && !showTripForm && (
-                <p className="px-4 sm:px-5 py-6 text-sm text-slate-400">No trips logged yet today.</p>
-              )}
-              {trips.map((trip) => (
-                <TripRow
-                  key={trip._id}
-                  trip={trip}
-                  onEnd={endTrip}
-                  onAddState={addTripState}
-                  dayEnded={dayEnded}
-                />
-              ))}
-            </div>
-          </section>
-
-          {/* Status / schedule */}
-          <section className="bg-white rounded-xl border border-slate-200">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-4 border-b border-slate-100">
-              <div>
-                <h2 className="font-semibold">Duty status</h2>
-                <p className="text-xs text-slate-400">
-                  Optional during the day — add driving, sleeper, rest, or on-duty blocks whenever you like.
-                </p>
-              </div>
-              {!dayEnded && (
-                <button
-                  onClick={() => setShowStatusForm((v) => !v)}
-                  className="w-full sm:w-auto text-sm font-medium text-[#B91C1C] border border-[#DC2626]/50 hover:border-[#DC2626] hover:bg-red-50 px-4 py-2 rounded-lg transition"
-                >
-                  + Add Status
-                </button>
-              )}
-            </div>
-
-            {showStatusForm && (
-              <StatusForm onCancel={() => setShowStatusForm(false)} onSubmit={addStatus} />
-            )}
-
-            <div className="px-4 sm:px-5 py-5 overflow-x-auto bg-white">
-              <div className="min-w-[560px] sm:min-w-0">
-                <StatusTimeline statusChanges={statusChanges} />
-              </div>
-            </div>
-
-            {statusChanges.length > 0 && (
-              <div className="divide-y divide-slate-100 border-t border-slate-100">
-                {statusChanges.map((s, i) => {
-                  const opt = STATUS_OPTIONS.find((o) => o.value === s.status);
-                  return (
-                    <div
-                      key={i}
-                      className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 sm:px-5 py-3 text-sm"
-                    >
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
-                        <span
-                          className="w-2.5 h-2.5 rounded-full shrink-0"
-                          style={{ backgroundColor: opt?.color }}
-                        />
-                        <span className="font-medium whitespace-nowrap">{opt?.label}</span>
-                        <span className="font-mono text-slate-500 whitespace-nowrap">
-                          {s.from} – {s.to}
-                        </span>
-                        {s.purpose && (
-                          <span className="text-slate-400 truncate max-w-[180px] sm:max-w-none">
-                            · {s.purpose}
-                          </span>
-                        )}
-                      </div>
-                      {!dayEnded && (
-                        <button
-                          onClick={() => removeStatus(i)}
-                          className="text-slate-400 hover:text-[#7F1D1D] text-xs shrink-0"
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
-          {/* End day — darkest red: this locks the whole day */}
-          {!dayEnded && (
-            <div className="flex justify-end">
-              <button
-                onClick={endDay}
-                disabled={endingDay}
-                className="w-full sm:w-auto bg-[#7F1D1D] text-white font-semibold px-6 py-3 rounded-lg hover:bg-[#5c1515] disabled:opacity-60 disabled:cursor-not-allowed transition"
-              >
-                {endingDay ? "Ending…" : "End Day"}
-              </button>
             </div>
           )}
 
-          {dayEnded && (
-            <div className="bg-white border border-slate-200 rounded-lg px-4 sm:px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <CheckCircleIcon className="w-6 h-6 text-emerald-500 shrink-0" />
-                <p className="text-sm text-slate-600">
-                  Today's log is closed. Miles, fuel, and duty hours are locked in.
+          {dailyLog && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <SummaryCard label="Trips" value={trips.length} />
+                <SummaryCard label="Total miles" value={totals.miles.toLocaleString()} />
+                <SummaryCard label="Fuel logged" value={`${totals.fuel} gal`} />
+                <SummaryCard label="Driving time" value={fmtHours(totals.byStatus.driving)} highlight />
+              </div>
+
+              <section className="bg-white rounded-xl border border-slate-200">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-4 border-b border-slate-100">
+                  <h2 className="font-semibold">Trips</h2>
+                  {canEdit && (
+                    <button
+                      onClick={() => setShowTripForm((v) => !v)}
+                      className="w-full sm:w-auto text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] px-4 py-2 rounded-full transition"
+                    >
+                      {trips.length === 0 ? "+ Add a Trip" : "+ Add Another Trip"}
+                    </button>
+                  )}
+                </div>
+
+                {showTripForm && (
+                  <TripForm
+                    trucks={trucks}
+                    trailers={trailers}
+                    onCancel={() => setShowTripForm(false)}
+                    onSubmit={createTrip}
+                  />
+                )}
+
+                <div className="divide-y divide-slate-100">
+                  {trips.length === 0 && !showTripForm && (
+                    <p className="px-4 sm:px-5 py-6 text-sm text-slate-400">No trips logged for this day.</p>
+                  )}
+                  {trips.map((trip) => (
+                    <TripRow
+                      key={trip._id}
+                      trip={trip}
+                      onEnd={endTrip}
+                      onAddState={addTripState}
+                      onDelete={deleteTrip}
+                      dayEnded={!canEdit}
+                    />
+                  ))}
+                </div>
+              </section>
+
+              <section className="bg-white rounded-xl border border-slate-200">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-4 border-b border-slate-100">
+                  <div>
+                    <h2 className="font-semibold">Duty status</h2>
+                    <p className="text-xs text-slate-400">
+                      Optional during the day — add driving, sleeper, rest, or on-duty blocks whenever you like.
+                    </p>
+                  </div>
+                  {canEdit && (
+                    <button
+                      onClick={() => setShowStatusForm((v) => !v)}
+                      className="w-full sm:w-auto text-sm font-medium text-[#B91C1C] border border-[#DC2626]/50 hover:border-[#DC2626] hover:bg-red-50 px-4 py-2 rounded-full transition"
+                    >
+                      + Add Status
+                    </button>
+                  )}
+                </div>
+
+                {showStatusForm && (
+                  <StatusForm onCancel={() => setShowStatusForm(false)} onSubmit={addStatus} />
+                )}
+
+                <div className="px-4 sm:px-5 py-5 overflow-x-auto bg-white">
+                  <div className="min-w-[560px] sm:min-w-0">
+                    <StatusTimeline statusChanges={statusChanges} />
+                  </div>
+                </div>
+
+                {statusChanges.length > 0 && (
+                  <div className="divide-y divide-slate-100 border-t border-slate-100">
+                    {statusChanges.map((s, i) => {
+                      const opt = STATUS_OPTIONS.find((o) => o.value === s.status);
+                      return (
+                        <div
+                          key={i}
+                          className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 sm:px-5 py-3 text-sm"
+                        >
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: opt?.color }}
+                            />
+                            <span className="font-medium whitespace-nowrap">{opt?.label}</span>
+                            <span className="font-mono text-slate-500 whitespace-nowrap">
+                              {s.from} – {s.to}
+                            </span>
+                            {s.purpose && (
+                              <span className="text-slate-400 truncate max-w-[180px] sm:max-w-none">
+                                · {s.purpose}
+                              </span>
+                            )}
+                          </div>
+                          {canEdit && (
+                            <button
+                              onClick={() => removeStatus(i)}
+                              className="text-slate-400 hover:text-[#7F1D1D] text-xs shrink-0"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              {canEdit && (
+                <div className="flex justify-end">
+                  <button
+                    onClick={endDay}
+                    disabled={endingDay}
+                    className="w-full sm:w-auto bg-[#7F1D1D] text-white font-semibold px-6 py-3 rounded-full hover:bg-[#5c1515] disabled:opacity-60 disabled:cursor-not-allowed transition"
+                  >
+                    {endingDay ? "Ending…" : "End Day"}
+                  </button>
+                </div>
+              )}
+
+              {dayEnded && (
+                <div className="bg-white border border-slate-200 rounded-lg px-4 sm:px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <CheckCircleIcon className="w-6 h-6 text-emerald-500 shrink-0" />
+                    <p className="text-sm text-slate-600">
+                      This log is closed. Miles, fuel, and duty hours are locked in.
+                    </p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    {editable && (
+                      <button
+                        onClick={() => {
+                          if (window.confirm("Reopen this log? You'll be able to edit trips and statuses again.")) {
+                            reopenDay();
+                          }
+                        }}
+                        disabled={reopeningDay}
+                        className="inline-flex items-center justify-center gap-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-full transition"
+                      >
+                        {reopeningDay ? <SpinnerIcon className="w-4 h-4" /> : null}
+                        {reopeningDay ? "Reopening…" : "Reopen Day"}
+                      </button>
+                    )}
+                    <button
+                      onClick={downloadReport}
+                      disabled={downloadingReport}
+                      className="inline-flex items-center justify-center gap-2 text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-full transition"
+                    >
+                      {downloadingReport ? <SpinnerIcon className="w-4 h-4" /> : <ReportIcon className="w-4 h-4" />}
+                      {downloadingReport ? "Generating…" : "Download PDF Report"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {!editable && !dayEnded && (
+                <p className="text-xs text-slate-400 text-right">
+                  This day is outside the edit window, so trips and statuses are read-only.
                 </p>
-              </div>
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                <button
-                  onClick={() => {
-                    if (window.confirm("Reopen today's log? You'll be able to edit trips and statuses again.")) {
-                      reopenDay();
-                    }
-                  }}
-                  disabled={reopeningDay}
-                  className="inline-flex items-center justify-center gap-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition"
-                >
-                  {reopeningDay ? <SpinnerIcon className="w-4 h-4" /> : null}
-                  {reopeningDay ? "Reopening…" : "Reopen Day"}
-                </button>
-                <button
-                  onClick={downloadReport}
-                  disabled={downloadingReport}
-                  className="inline-flex items-center justify-center gap-2 text-sm font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition"
-                >
-                  {downloadingReport ? <SpinnerIcon className="w-4 h-4" /> : <ReportIcon className="w-4 h-4" />}
-                  {downloadingReport ? "Generating…" : "Download PDF Report"}
-                </button>
-              </div>
-            </div>
+              )}
+            </>
           )}
         </>
       )}
@@ -622,9 +688,16 @@ function ReportIcon({ className = "w-4 h-4" }) {
   );
 }
 
-// Reusable city/state (or just city, or just country) location inputs with a
-// proper "use my current location" button — icon + label, clear pressed/
-// disabled states instead of a bare underlined link.
+function TrashIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 function LocationFields({ city, state, onChangeCity, onChangeState, autoFetch = false }) {
   const [locating, setLocating] = useState(false);
   const [triedAuto, setTriedAuto] = useState(false);
@@ -682,9 +755,10 @@ function LocationFields({ city, state, onChangeCity, onChangeState, autoFetch = 
   );
 }
 
-function TripRow({ trip, onEnd, onAddState, dayEnded }) {
+function TripRow({ trip, onEnd, onAddState, onDelete, dayEnded }) {
   const [ending, setEnding] = useState(false);
   const [addingState, setAddingState] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [odometerEnding, setOdometerEnding] = useState("");
   const [fuel, setFuel] = useState("");
   const [endCity, setEndCity] = useState("");
@@ -696,9 +770,20 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
   const states = trip.states || [];
   const hasOpenState = states.length > 0 && states[states.length - 1].endOdometer == null;
 
+  async function handleDelete() {
+    if (!window.confirm("Delete this trip? This can't be undone.")) return;
+    setDeleting(true);
+    try {
+      await onDelete(trip._id);
+      // row unmounts on success once the parent filters it out — no need to reset here
+    } catch {
+      // error already shown in the page-level banner; keep the row so the driver can retry
+      setDeleting(false);
+    }
+  }
+
   async function submitEnd(e) {
     e.preventDefault();
-    // matches the backend's own check: endLocation needs at least one of city/state
     if (!endCity && !endStateName) {
       setEndLocationError("Enter (or fetch) the ending location before saving");
       return;
@@ -715,8 +800,6 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
           formatted: formatLocation({ city: endCity, state: endStateName }),
         },
       });
-      // onEnd only resolves without throwing when the API actually accepted it —
-      // only close the form on real success, so validation errors leave it open to fix
       setEnding(false);
     } catch {
       // error is already shown in the page-level banner by onEnd; keep the form open
@@ -752,18 +835,31 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
             {trip.fuel ? ` · ${trip.fuel} gal total` : ""}
           </p>
         </div>
-        {isOpen && !dayEnded && (
-          <button
-            onClick={() => setEnding((v) => !v)}
-            className="self-start sm:self-auto w-full sm:w-auto shrink-0 text-sm font-medium text-white bg-[#7F1D1D] hover:bg-[#5c1515] px-4 py-2 rounded-lg transition"
-          >
-            End Trip
-          </button>
-        )}
-        {!isOpen && <span className="text-xs font-mono text-emerald-600">Completed</span>}
+
+        <div className="flex items-center gap-2 shrink-0">
+          {isOpen && !dayEnded && (
+            <button
+              onClick={() => setEnding((v) => !v)}
+              className="text-sm font-medium text-white bg-[#7F1D1D] hover:bg-[#5c1515] px-4 py-2 rounded-full transition"
+            >
+              End Trip
+            </button>
+          )}
+          {!isOpen && <span className="text-xs font-mono text-emerald-600">Completed</span>}
+          {!dayEnded && (
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              aria-label="Delete trip"
+              title="Delete trip"
+              className="w-9 h-9 flex items-center justify-center rounded-full text-slate-400 hover:text-[#7F1D1D] hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              {deleting ? <SpinnerIcon className="w-4 h-4" /> : <TrashIcon className="w-4 h-4" />}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Per-trip state-by-state odometer + fuel breakdown */}
       {states.length > 0 && (
         <div className="mt-3 space-y-1">
           {states.map((s, i) => (
@@ -837,14 +933,14 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
               type="button"
               onClick={() => setEnding(false)}
               disabled={savingEnd}
-              className="w-full sm:w-auto px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full sm:w-auto px-5 py-2 rounded-full text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={savingEnd}
-              className="w-full sm:w-auto bg-[#7F1D1D] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#5c1515] disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full sm:w-auto bg-[#7F1D1D] text-white font-semibold px-5 py-2 rounded-full hover:bg-[#5c1515] disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {savingEnd ? "Saving…" : "Save & End Trip"}
             </button>
@@ -855,11 +951,6 @@ function TripRow({ trip, onEnd, onAddState, dayEnded }) {
   );
 }
 
-// Single-odometer state crossing form. The one number entered here becomes
-// BOTH the endOdometer of the state being left and the startOdometer of the
-// state being entered — the driver never has to type the same reading twice.
-// Fuel (optional) is recorded against the state being left, since it was
-// added before the truck crossed the line.
 function StateForm({ onCancel, onSubmit, saving, leavingLocationLabel }) {
   const [odometer, setOdometer] = useState("");
   const [fuel, setFuel] = useState("");
@@ -913,14 +1004,14 @@ function StateForm({ onCancel, onSubmit, saving, leavingLocationLabel }) {
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="w-full sm:w-auto px-4 py-2 rounded-lg text-slate-500 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto px-4 py-2 rounded-full text-slate-500 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={saving}
-          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-4 py-2 rounded-lg text-sm hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-4 py-2 rounded-full text-sm hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? "Saving…" : "Save"}
         </button>
@@ -959,7 +1050,6 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
         truck: truck || undefined,
         trailer,
         odometerBeginning: Number(odometerBeginning),
-        // destination and fuel are captured on End Trip / state crossings instead
       });
     } finally {
       setSaving(false);
@@ -1012,14 +1102,14 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="w-full sm:w-auto px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto px-5 py-2 rounded-full text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={saving}
-          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-full hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? "Saving…" : "Save Trip"}
         </button>
@@ -1099,14 +1189,14 @@ function StatusForm({ onCancel, onSubmit }) {
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="w-full sm:w-auto px-5 py-2 rounded-lg text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto px-5 py-2 rounded-full text-slate-500 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={saving}
-          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-lg hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full sm:w-auto bg-[#DC2626] text-white font-semibold px-5 py-2 rounded-full hover:bg-[#B91C1C] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? "Saving…" : "Add Status"}
         </button>

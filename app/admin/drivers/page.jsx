@@ -104,7 +104,7 @@ function DriverCard({ driver }) {
         <div className="drv-inline-meta" style={{ display: "none", fontSize: 11, color: "#9ca3af", marginTop: 4, gap: 10 }}>
           <span>{driver.phone}</span>
           <span>·</span>
-          <span>Lic {driver.licenseNumber}</span>
+          <span>Lic {driver.email}</span>
         </div>
       </div>
 
@@ -251,7 +251,7 @@ export default function DriversPage() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name, phone, carrier, license…"
+          placeholder="Search name, phone, carrier"
           style={{
             fontSize: 13,
             padding: "9px 13px",
@@ -297,7 +297,7 @@ export default function DriversPage() {
           <div style={{ width: 36 }} />
           <div style={{ flex: 1 }}>Driver</div>
           <div style={{ width: 120, flexShrink: 0 }}>Phone</div>
-          <div style={{ width: 100, flexShrink: 0 }}>License</div>
+          <div style={{ width: 100, flexShrink: 0 }}>Email</div>
         </div>
 
         {loading ? (

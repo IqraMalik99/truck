@@ -27,6 +27,12 @@ import StatusTimeline from "./Statustimeline";
   PDF reports (admin panel — driverId comes from the URL, not session):
     GET /api/dashboard/drivers/[driverId]/month/report?year=YYYY&month=MM   -> brief monthly summary PDF
     GET /api/dashboard/drivers/[driverId]/report?date=YYYY-MM-DD            -> full daily PDF (day must be closed)
+
+  NOTE: TripSheet locations are `startLocation` / `endLocation` objects
+  ({ city, state, country, formatted }) — there is no `destination`,
+  `startState`, or `endState` field on the schema. Using those old names
+  always resolved to undefined, which is why trips previously showed as
+  "Untitled destination" with a blank route line.
 */
 
 const STATUS_OPTIONS = [
@@ -446,32 +452,39 @@ function DayDetailModal({ driverId, log, dateObj, onClose }) {
             <p className="text-sm text-slate-400">No trips logged this day.</p>
           )}
           <div className="divide-y divide-slate-100">
-            {(log.trips || []).map((trip) => (
-              <div key={trip._id} className="py-3 text-sm space-y-1">
-                <div className="flex items-center justify-between">
-                  <p className="font-medium text-slate-700">{trip.destination || "Untitled destination"}</p>
-                  {!trip.enddate && !trip.odometerEnding && (
-                    <span className="text-xs text-blue-600">In progress</span>
+            {(log.trips || []).map((trip) => {
+              const isOpen = !trip.enddate && !trip.odometerEnding;
+              return (
+                <div key={trip._id} className="py-3 text-sm space-y-1">
+                  <div className="flex items-center justify-between">
+                    {/* TripSheet has no `destination` field — the endpoint of a
+                        trip is `endLocation.formatted`, set once the trip is
+                        ended. Fall back to a status label instead of an
+                        empty/undefined string while it's still open. */}
+                    <p className="font-medium text-slate-700">
+                      {trip.endLocation?.formatted || (isOpen ? "Trip in progress" : "Trip completed")}
+                    </p>
+                    {isOpen && <span className="text-xs text-blue-600">In progress</span>}
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    {trip.startLocation?.formatted || "—"} → {trip.endLocation?.formatted || "in progress"}
+                    {trip.totalMiles ? ` · ${trip.totalMiles} mi` : ""}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    odo {trip.odometerBeginning ?? "—"}
+                    {trip.odometerEnding ? ` – ${trip.odometerEnding}` : ""}
+                    {trip.fuel ? ` · ${trip.fuel} gal fuel` : ""}
+                  </p>
+                  {(trip.truck?.unitNumber || trip.trailer?.trailerNumber) && (
+                    <p className="text-xs text-slate-400">
+                      {trip.truck?.unitNumber ? `Unit ${trip.truck.unitNumber}` : ""}
+                      {trip.truck?.unitNumber && trip.trailer?.trailerNumber ? " · " : ""}
+                      {trip.trailer?.trailerNumber ? `Trailer ${trip.trailer.trailerNumber}` : ""}
+                    </p>
                   )}
                 </div>
-                <p className="text-xs text-slate-400">
-                  {trip.startState} → {trip.endState || "in progress"}
-                  {trip.totalMiles ? ` · ${trip.totalMiles} mi` : ""}
-                </p>
-                <p className="text-xs text-slate-400">
-                  odo {trip.odometerBeginning ?? "—"}
-                  {trip.odometerEnding ? ` – ${trip.odometerEnding}` : ""}
-                  {trip.fuel ? ` · ${trip.fuel} gal fuel` : ""}
-                </p>
-                {(trip.truck?.unitNumber || trip.trailer?.trailerNumber) && (
-                  <p className="text-xs text-slate-400">
-                    {trip.truck?.unitNumber ? `Unit ${trip.truck.unitNumber}` : ""}
-                    {trip.truck?.unitNumber && trip.trailer?.trailerNumber ? " · " : ""}
-                    {trip.trailer?.trailerNumber ? `Trailer ${trip.trailer.trailerNumber}` : ""}
-                  </p>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

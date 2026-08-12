@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Truck, User, Mail, Lock, Phone, IdCard, Building2, Loader2 } from "lucide-react";
+import { Truck, User, Mail, Lock, Phone, Building2, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 export default function SignUpPage() {
@@ -11,8 +11,7 @@ export default function SignUpPage() {
     email: "",
     password: "",
     phone: "",
-    licenseNumber: "",
-    carrierName: "",
+    carrierName: "", // kept as-is so /api/auth/register doesn't need changes; label says "Company" in the UI
   });
   const [status, setStatus] = useState("idle"); // idle | loading | error | success
   const [errorMsg, setErrorMsg] = useState("");
@@ -27,11 +26,16 @@ export default function SignUpPage() {
     setStatus("loading");
     setErrorMsg("");
 
+    // Captured automatically — no UI field, no action needed from the driver.
+    // IANA name (e.g. "Asia/Karachi", "America/Chicago") — matches what the
+    // daily-log day-boundary logic expects on the backend.
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
     try {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, timezone }),
       });
 
       const data = await res.json();
@@ -129,20 +133,11 @@ export default function SignUpPage() {
             />
 
             <Field
-              icon={IdCard}
-              name="licenseNumber"
-              value={form.licenseNumber}
-              onChange={handleChange}
-              placeholder="License number"
-              required
-            />
-
-            <Field
               icon={Building2}
               name="carrierName"
               value={form.carrierName}
               onChange={handleChange}
-              placeholder="Carrier name"
+              placeholder="Company name"
               required
             />
 

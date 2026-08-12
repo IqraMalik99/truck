@@ -2,14 +2,8 @@ import { NextResponse } from "next/server";
 import {connectDB} from "../../../lib/db";
 import { DriverDailyLog } from "../../../models/schema";
 import { getCurrentDriver } from "../../../lib/getCurrentDriver";
+import { todayRangeForDriver } from "../../../lib/dateRange";
 
-function todayRange() {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { start, end };
-}
 
 export async function GET() {
   await connectDB();
@@ -18,7 +12,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   }
 
-  const { start, end } = todayRange();
+  const { start, end } = todayRangeForDriver(driver.timezone);
 
   const log = await DriverDailyLog.findOne({
     driver: driver._id,
