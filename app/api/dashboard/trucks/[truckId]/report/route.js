@@ -1,4 +1,3 @@
-
 import PDFDocument from "pdfkit";
 import { NextResponse } from "next/server";
 import { connectDB } from "../../../../../lib/db";
@@ -6,25 +5,42 @@ import { TripSheet, Truck } from "../../../../../models/schema";
 
 
 const COLORS = {
-  ink: "#111827",
-  subtext: "#6B7280",
-  body: "#374151",
-  border: "#E5E7EB",
-  cardBg: "#F9FAFB",
-  rowAlt: "#F8FAFC",
+  ink: "#0F172A",
+  subtext: "#64748B",
+  body: "#334155",
+  border: "#E2E8F0",
+  cardBg: "#F8FAFC",
+  rowAlt: "#EFF6FF",
   divider: "#E2E8F0",
+  accent: "#2563EB",
+  accentDark: "#1E3A8A",
+  accentSoft: "#93C5FD",
 };
 
 const PAGE_MARGIN = 50;
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+// `location.formatted` is an optional field — nothing guarantees it's set
+// when a trip/state is created. Fall back to city/state/country instead of
+// silently dropping the location (which was the earlier bug: any state
+// without a `formatted` value never showed up anywhere in the report).
+function formatLocation(loc) {
+  if (!loc) return null;
+  if (loc.formatted) return loc.formatted;
+  const parts = [loc.city, loc.state, loc.country].filter(Boolean);
+  return parts.length ? parts.join(", ") : null;
+}
+
 function tripStates(trip) {
   const set = new Set();
   (trip.states || []).forEach((s) => {
-    if (s.location?.formatted) set.add(s.location.formatted);
+    const name = formatLocation(s.location);
+    if (name) set.add(name);
   });
-  if (trip.startLocation?.formatted) set.add(trip.startLocation.formatted);
-  if (trip.endLocation?.formatted) set.add(trip.endLocation.formatted);
+  const start = formatLocation(trip.startLocation);
+  if (start) set.add(start);
+  const end = formatLocation(trip.endLocation);
+  if (end) set.add(end);
   return Array.from(set);
 }
 
@@ -105,6 +121,58 @@ function drawHeader(doc, { periodLabel, truck }) {
   doc.y = metaY + Math.max(periodHeight, truckHeight) + 14;
 }
 
+// A dedicated, hard-to-miss banner (not a buried stat) for this truck's
+// lifetime trip count — mirrors the driver monthly report's lifetime-trips
+// block so every report in the product reads consistently: "big picture"
+// first, then the numbers for the selected period.
+function drawLifetimeTripsBlock(doc, truck, totalTripsAllTime) {
+  const startX = doc.page.margins.left;
+  const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const blockHeight = 56;
+  const y = doc.y;
+
+  doc.roundedRect(startX, y, width, blockHeight, 8).fill(COLORS.accent);
+
+  const iconCx = startX + 34;
+  const iconCy = y + blockHeight / 2;
+  doc.circle(iconCx, iconCy, 16).fill("white");
+  doc
+    .save()
+    .strokeColor(COLORS.accent)
+    .lineWidth(2.5)
+    .moveTo(iconCx - 7, iconCy + 3)
+    .lineTo(iconCx - 2, iconCy - 5)
+    .lineTo(iconCx + 3, iconCy)
+    .lineTo(iconCx + 8, iconCy - 7)
+    .stroke()
+    .restore();
+
+  const textX = startX + 62;
+  const textWidth = width - 62 - 200;
+
+  doc
+    .fillColor("white")
+    .font("Helvetica-Bold")
+    .fontSize(11)
+    .text("Total Trips Completed (All-Time)", textX, y + 12, { width: textWidth });
+  doc
+    .fillColor("#DBEAFE")
+    .font("Helvetica")
+    .fontSize(8.5)
+    .text(`Across every logged trip for Unit ${truck.unitNumber}`, textX, y + 30, { width: textWidth });
+
+  doc
+    .fillColor("white")
+    .font("Helvetica-Bold")
+    .fontSize(30)
+    .text(totalTripsAllTime.toLocaleString(), startX + width - 200, y + 10, {
+      width: 180,
+      align: "right",
+    });
+
+  doc.y = y + blockHeight + 20;
+}
+
 function drawHeroStats(doc, stats) {
   const startX = doc.page.margins.left;
   const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -157,6 +225,76 @@ function drawInfoLine(doc, text) {
     .text(text, doc.page.margins.left + 12, boxY + (boxHeight - textHeight) / 2, { width: textWidth });
 
   doc.y = boxY + boxHeight + 16;
+}
+
+// States Covered, as a multi-column list (top-to-bottom then left-to-right)
+// with each state paired with a count pill showing how many trips touched
+// it this period — same layout used in the driver daily/monthly reports,
+// so all three report types look like one consistent product. `entries`
+// is [stateName, count], pre-sorted by the caller (most-visited first).
+function drawStatesColumns(doc, entries, cols = 3) {
+  if (!entries.length) {
+    drawInfoLine(doc, "No states logged this period.");
+    return;
+  }
+
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const gap = 16;
+  const colWidth = (pageWidth - gap * (cols - 1)) / cols;
+  const startX = doc.page.margins.left;
+  const pillWidth = 26;
+  const textWidth = colWidth - pillWidth - 8;
+  const rowGap = 8;
+
+  const rows = Math.ceil(entries.length / cols);
+
+  const rowHeights = [];
+  for (let r = 0; r < rows; r++) {
+    let maxH = 0;
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (idx >= entries.length) continue;
+      const h = doc.heightOfString(entries[idx][0], { width: textWidth, fontSize: 10 });
+      maxH = Math.max(maxH, h);
+    }
+    rowHeights.push(Math.max(maxH, 16) + rowGap);
+  }
+
+  let y = doc.y;
+
+  for (let r = 0; r < rows; r++) {
+    const rowHeight = rowHeights[r];
+
+    const pageCountBefore = doc.bufferedPageRange().count;
+    ensureSpace(doc, rowHeight);
+    if (doc.bufferedPageRange().count !== pageCountBefore) {
+      y = doc.y;
+    }
+
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (idx >= entries.length) continue;
+      const [name, count] = entries[idx];
+      const x = startX + c * (colWidth + gap);
+
+      doc.roundedRect(x, y, pillWidth, 16, 8).fill(COLORS.accent);
+      doc
+        .fillColor("white")
+        .font("Helvetica-Bold")
+        .fontSize(8.5)
+        .text(String(count), x, y + 4, { width: pillWidth, align: "center" });
+
+      doc
+        .fillColor(COLORS.body)
+        .font("Helvetica")
+        .fontSize(10)
+        .text(name, x + pillWidth + 8, y + 2, { width: textWidth });
+    }
+
+    y += rowHeight;
+  }
+
+  doc.y = y + 10;
 }
 
 function drawGenericTable(doc, columns, rows, cellFns, emptyText) {
@@ -335,6 +473,12 @@ export async function GET(request, { params }) {
   const rangeStart = new Date(year, months[0] - 1, 1);
   const rangeEnd = new Date(year, months[months.length - 1], 1);
 
+  // Lifetime trip count for this truck — a plain count against TripSheet
+  // with NO date filter, independent of the period being viewed, so it
+  // always reflects every trip this truck has ever run, not just this
+  // period's.
+  const totalTripsAllTime = await TripSheet.countDocuments({ truck: truck._id });
+
   const trips = await TripSheet.find({
     truck: truck._id,
     startdate: { $gte: rangeStart, $lt: rangeEnd },
@@ -345,7 +489,11 @@ export async function GET(request, { params }) {
   let totalMiles = 0;
   let totalFuel = 0;
   const daysUsed = new Set();
-  const stateSet = new Set();
+
+  // States touched this period, tallied (not just deduped) so the section
+  // can show "how many" alongside "which ones" — same approach as the
+  // driver monthly report.
+  const stateCounts = new Map();
 
   const monthBuckets = new Map(
     months.map((m) => [m, { tripsCount: 0, milesTotal: 0, fuelTotal: 0, daysUsed: new Set() }])
@@ -360,7 +508,7 @@ export async function GET(request, { params }) {
     totalMiles += miles;
     totalFuel += fuel;
     daysUsed.add(dayKey);
-    tripStates(trip).forEach((s) => stateSet.add(s));
+    tripStates(trip).forEach((s) => stateCounts.set(s, (stateCounts.get(s) || 0) + 1));
 
     const bucket = monthBuckets.get(m);
     if (bucket) {
@@ -373,11 +521,14 @@ export async function GET(request, { params }) {
     return {
       date: trip.startdate,
       driver: trip.driver?.name || "Unknown",
-      route: `${trip.startLocation?.formatted || "?"} -> ${trip.endLocation?.formatted || "in progress"}`,
+      route: `${formatLocation(trip.startLocation) || "?"} -> ${formatLocation(trip.endLocation) || "in progress"}`,
       miles,
       fuel,
     };
   });
+
+  // Most-visited state first, ties broken alphabetically.
+  const stateEntries = [...stateCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 
   const monthSummaryRows = months.map((m) => {
     const b = monthBuckets.get(m);
@@ -397,15 +548,17 @@ export async function GET(request, { params }) {
 
   drawHeader(doc, { periodLabel, truck });
 
+  drawLifetimeTripsBlock(doc, truck, totalTripsAllTime);
+
   drawHeroStats(doc, [
     { label: "Trips", value: String(trips.length) },
     { label: "Total Miles", value: totalMiles.toLocaleString() },
     { label: "Fuel Logged", value: `${totalFuel} gal` },
-    { label: "Days Used", value: String(daysUsed.size), accent: "#FCA5A5" },
+    { label: "Days Used", value: String(daysUsed.size), accent: COLORS.accentSoft },
   ]);
 
   sectionHeading(doc, "States Covered");
-  drawInfoLine(doc, stateSet.size ? Array.from(stateSet).join("  ·  ") : "No states logged this period.");
+  drawStatesColumns(doc, stateEntries, 3);
 
   if (period === "month") {
     sectionHeading(doc, "Trips");

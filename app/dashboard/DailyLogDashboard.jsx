@@ -19,6 +19,7 @@ import { isDateEditable, relativeDayLabel, startOfDay, toDateKey } from "../lib/
   POST   /api/daily-log/end     -> { log }   body: { dailyLogId }
   GET    /api/trucks            -> Truck[]
   GET    /api/trailers          -> Trailer[]
+  GET    /api/driver/trip-stats -> { totalTrips: number }   // all-time trip count for the logged-in driver
 
   IMPORTANT: the frontend only greys out non-editable dates for UX — the API
   must independently re-check the date against the same window (see
@@ -141,6 +142,9 @@ export default function DailyLogDashboard() {
 
   const [timeZone, setTimeZone] = useState("UTC");
 
+  // All-time trip count for this driver — independent of the selected day.
+  const [totalTrips, setTotalTrips] = useState(null);
+
   const isToday = toDateKey(selectedDate, timeZone) === toDateKey(new Date(), timeZone);
   const editable = isDateEditable(selectedDate, timeZone);
 
@@ -175,6 +179,9 @@ export default function DailyLogDashboard() {
       const res = await fetch(`/api/daily-log/day?date=${toDateKey(date, timeZone)}`);
       if (res.ok) {
         const data = await res.json();
+        // totalTrips is all-time for the driver and comes back on every call
+        // to this route, regardless of whether a log exists for the day.
+        setTotalTrips(typeof data.totalTrips === "number" ? data.totalTrips : null);
         if (data?.log) {
           setDailyLog(data.log);
           setTrips(data.trips || data.log.trips || []);
@@ -240,6 +247,7 @@ export default function DailyLogDashboard() {
       const trip = await res.json();
       setTrips((prev) => [...prev, trip]);
       setShowTripForm(false);
+      setTotalTrips((prev) => (typeof prev === "number" ? prev + 1 : prev));
     } catch (err) {
       setError(err.message || "Couldn't save the trip. Nothing was lost — try again.");
     }
@@ -272,6 +280,7 @@ export default function DailyLogDashboard() {
       throw new Error(message);
     }
     setTrips((prev) => prev.filter((t) => t._id !== tripId));
+    setTotalTrips((prev) => (typeof prev === "number" ? Math.max(0, prev - 1) : prev));
   }
 
   async function addTripState(tripId, payload) {
@@ -447,8 +456,12 @@ export default function DailyLogDashboard() {
 
           {dailyLog && (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <SummaryCard label="Trips" value={trips.length} />
+                <SummaryCard
+                  label="Total Trips"
+                  value={totalTrips === null ? "…" : totalTrips.toLocaleString()}
+                />
                 <SummaryCard label="Total miles" value={totals.miles.toLocaleString()} />
                 <SummaryCard label="Fuel logged" value={`${totals.fuel} gal`} />
                 <SummaryCard label="Driving time" value={fmtHours(totals.byStatus.driving)} highlight />

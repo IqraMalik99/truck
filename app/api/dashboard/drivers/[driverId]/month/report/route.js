@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import PDFDocument from "pdfkit";
 import { connectDB } from "../../../../../../lib/db";
-import { DriverDailyLog, Driver } from "../../../../../../models/schema";
+import { DriverDailyLog, Driver, TripSheet } from "../../../../../../models/schema";
 
 
 
@@ -11,13 +11,16 @@ import { DriverDailyLog, Driver } from "../../../../../../models/schema";
 // Just totals + a short table so an admin can see the month at a glance.
 
 const COLORS = {
-  ink: "#111827",
-  subtext: "#6B7280",
-  body: "#374151",
-  border: "#E5E7EB",
-  cardBg: "#F9FAFB",
-  rowAlt: "#F8FAFC",
+  ink: "#0F172A",
+  subtext: "#64748B",
+  body: "#334155",
+  border: "#E2E8F0",
+  cardBg: "#F8FAFC",
+  rowAlt: "#EFF6FF",
   divider: "#E2E8F0",
+  accent: "#2563EB",
+  accentDark: "#1E3A8A",
+  accentSoft: "#93C5FD",
 };
 
 const PAGE_MARGIN = 50;
@@ -37,6 +40,18 @@ function fmtHours(mins) {
   return `${h}h ${m}m`;
 }
 
+// `location.formatted` is an optional field on LocationSchema — nothing
+// guarantees it gets set when a trip state is created. If it's missing,
+// fall back to building a display string from city/state/country instead
+// of silently dropping the entry (which is what was happening before: any
+// state without a `formatted` value just never showed up anywhere).
+function formatLocation(loc) {
+  if (!loc) return null;
+  if (loc.formatted) return loc.formatted;
+  const parts = [loc.city, loc.state, loc.country].filter(Boolean);
+  return parts.length ? parts.join(", ") : null;
+}
+
 function daysInMonth(year, month) {
   return new Date(year, month, 0).getDate();
 }
@@ -50,7 +65,7 @@ function dayTotals(log) {
   statusChanges.forEach((s) => {
     if (s.status === "driving") driving += minutesBetween(s.from, s.to);
   });
-  return { miles, fuel, driving };
+  return { miles, fuel, driving, tripCount: trips.length };
 }
 
 function ensureSpace(doc, neededHeight) {
@@ -80,11 +95,7 @@ function drawHeader(doc, { monthLabel, driver }) {
     .fontSize(18)
     .font("Helvetica-Bold")
     .text("Monthly Driver Log Summary", startX, doc.y);
-  doc
-    .fontSize(10)
-    .font("Helvetica")
-    .fillColor(COLORS.subtext)
-    .text("Brief overview — see daily reports for full detail", startX, doc.y + 2);
+
   doc.moveDown(1.4);
 
   const metaY = doc.y;
@@ -112,6 +123,62 @@ function drawHeader(doc, { monthLabel, driver }) {
   }
 
   doc.y = bottomY + 14;
+}
+
+// A dedicated, hard-to-miss block (not just a small header badge) for the
+// driver's lifetime trip count — its own banner with an icon, a big number,
+// and a one-line caption, placed right after the header and before the
+// month's own hero stats so it reads as "here's the big picture" before
+// the report narrows down to this specific month.
+function drawLifetimeTripsBlock(doc, driver, totalTripsAllTime) {
+  const startX = doc.page.margins.left;
+  const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const blockHeight = 56;
+  const y = doc.y;
+
+  doc.roundedRect(startX, y, width, blockHeight, 8).fill(COLORS.accent);
+
+  // Simple odometer-style icon circle on the left.
+  const iconCx = startX + 34;
+  const iconCy = y + blockHeight / 2;
+  doc.circle(iconCx, iconCy, 16).fill("white");
+  doc
+    .save()
+    .strokeColor(COLORS.accent)
+    .lineWidth(2.5)
+    .moveTo(iconCx - 7, iconCy + 3)
+    .lineTo(iconCx - 2, iconCy - 5)
+    .lineTo(iconCx + 3, iconCy)
+    .lineTo(iconCx + 8, iconCy - 7)
+    .stroke()
+    .restore();
+
+  const textX = startX + 62;
+  const textWidth = width - 62 - 200;
+
+  doc
+    .fillColor("white")
+    .font("Helvetica-Bold")
+    .fontSize(11)
+    .text("Total Trips Completed (All-Time)", textX, y + 12, { width: textWidth });
+  doc
+    .fillColor("#DBEAFE")
+    .font("Helvetica")
+    .fontSize(8.5)
+    .text(driver?.name ? `Across every logged trip for ${driver.name}` : "Across every logged trip", textX, y + 30, {
+      width: textWidth,
+    });
+
+  doc
+    .fillColor("white")
+    .font("Helvetica-Bold")
+    .fontSize(30)
+    .text(totalTripsAllTime.toLocaleString(), startX + width - 200, y + 10, {
+      width: 180,
+      align: "right",
+    });
+
+  doc.y = y + blockHeight + 20;
 }
 
 function drawSummarySentence(doc, text) {
@@ -172,17 +239,87 @@ function drawHeroStats(doc, stats) {
   doc.y = y + bandHeight + 20;
 }
 
+// States Covered, laid out as a multi-column list (top-to-bottom then
+// left-to-right) with each state paired with how many times it was hit
+// this month — a small count "pill" instead of a bare bullet, since a
+// plain name list can't answer "how much of this month was Punjab vs.
+// everywhere else". `entries` is an array of [stateName, count], already
+// sorted by the caller. Row heights are measured per-row (a state name can
+// wrap) so nothing overlaps, and it paginates cleanly for a busy month.
+function drawStatesColumns(doc, entries, cols = 3) {
+  if (!entries.length) return;
 
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const gap = 16;
+  const colWidth = (pageWidth - gap * (cols - 1)) / cols;
+  const startX = doc.page.margins.left;
+  const pillWidth = 26;
+  const textIndent = 0;
+  const textWidth = colWidth - pillWidth - 8;
+  const rowGap = 8;
+
+  const rows = Math.ceil(entries.length / cols);
+
+  const rowHeights = [];
+  for (let r = 0; r < rows; r++) {
+    let maxH = 0;
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (idx >= entries.length) continue;
+      const h = doc.heightOfString(entries[idx][0], { width: textWidth, fontSize: 10 });
+      maxH = Math.max(maxH, h);
+    }
+    rowHeights.push(Math.max(maxH, 16) + rowGap);
+  }
+
+  let y = doc.y;
+
+  for (let r = 0; r < rows; r++) {
+    const rowHeight = rowHeights[r];
+
+    const pageCountBefore = doc.bufferedPageRange().count;
+    ensureSpace(doc, rowHeight);
+    if (doc.bufferedPageRange().count !== pageCountBefore) {
+      y = doc.y;
+    }
+
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (idx >= entries.length) continue;
+      const [name, count] = entries[idx];
+      const x = startX + c * (colWidth + gap);
+
+      // Count pill on the left of each entry.
+      doc.roundedRect(x, y, pillWidth, 16, 8).fill(COLORS.accent);
+      doc
+        .fillColor("white")
+        .font("Helvetica-Bold")
+        .fontSize(8.5)
+        .text(String(count), x, y + 4, { width: pillWidth, align: "center" });
+
+      doc
+        .fillColor(COLORS.body)
+        .font("Helvetica")
+        .fontSize(10)
+        .text(name, x + pillWidth + 8 + textIndent, y + 2, { width: textWidth });
+    }
+
+    y += rowHeight;
+  }
+
+  doc.y = y + 10;
+}
 
 function drawDaysTable(doc, rows) {
   const startX = doc.page.margins.left;
   const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const columns = [
-    { key: "date", label: "Date", width: 0.28 },
-    { key: "status", label: "Status", width: 0.2 },
-    { key: "miles", label: "Miles", width: 0.18 },
-    { key: "fuel", label: "Fuel", width: 0.17 },
-    { key: "driving", label: "Driving", width: 0.17 },
+    { key: "date", label: "Date", width: 0.24 },
+    { key: "status", label: "Status", width: 0.16 },
+    { key: "trips", label: "Trips", width: 0.15 },
+    { key: "miles", label: "Miles", width: 0.15 },
+    { key: "fuel", label: "Fuel", width: 0.15 },
+    { key: "driving", label: "Driving", width: 0.15 },
   ].map((c) => ({ ...c, width: c.width * tableWidth }));
 
   const headerHeight = 22;
@@ -229,6 +366,7 @@ function drawDaysTable(doc, rows) {
     const cellValues = {
       date: r.dateLabel,
       status: r.dayEnded ? "Closed" : "Open",
+      trips: String(r.tripCount ?? 0),
       miles: r.miles ? `${r.miles} mi` : "—",
       fuel: r.fuel ? `${r.fuel} gal` : "—",
       driving: fmtHours(r.driving),
@@ -323,6 +461,11 @@ export async function GET(request, { params }) {
     .sort({ date: 1 })
     .populate({ path: "trips" });
 
+  // Lifetime trip count for this driver — a plain count against TripSheet
+  // with NO date filter, independent of the month being viewed, so it
+  // always reflects every trip ever logged, not just this month's.
+  const totalTripsAllTime = await TripSheet.countDocuments({ driver: driver._id });
+
   const totalDaysInMonth = daysInMonth(year, month);
   const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
   const asOfDay = isCurrentMonth ? now.getDate() : totalDaysInMonth;
@@ -330,23 +473,47 @@ export async function GET(request, { params }) {
   let totalMiles = 0;
   let totalFuel = 0;
   let totalDriving = 0;
+  let totalTripsThisMonth = 0;
+
+  // States touched this month, tallied (not just deduped) across every
+  // trip in every day — same source data (trip.states[].location.formatted)
+  // as the daily report's States Covered section, but here we keep a count
+  // per state so the section can show "how many" alongside "which ones".
+  const stateCounts = new Map();
 
   const rows = logs.map((log) => {
     const t = dayTotals(log);
     totalMiles += t.miles;
     totalFuel += t.fuel;
     totalDriving += t.driving;
+    totalTripsThisMonth += t.tripCount;
+
+    (log.trips || []).forEach((trip) => {
+      (trip.states || []).forEach((s) => {
+        const name = formatLocation(s.location);
+        if (!name) return;
+        stateCounts.set(name, (stateCounts.get(name) || 0) + 1);
+      });
+    });
+
     return {
       dateLabel: new Date(log.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
       dayEnded: !!log.dayEnded,
+      tripCount: t.tripCount,
       miles: t.miles,
       fuel: t.fuel,
       driving: t.driving,
     };
   });
 
+  // Most-visited state first, ties broken alphabetically, so the section
+  // reads as a ranked breakdown rather than an arbitrary order.
+  const stateEntries = [...stateCounts.entries()].sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+  );
+
   const monthLabel = monthStart.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  const summarySentence = `${logs.length} of ${asOfDay} day(s) logged so far this month, totaling ${totalMiles} mi, ${totalFuel} gal fuel, and ${fmtHours(
+  const summarySentence = `${logs.length} of ${asOfDay} day(s) logged so far this month, covering ${totalTripsThisMonth} trip(s), totaling ${totalMiles} mi, ${totalFuel} gal fuel, and ${fmtHours(
     totalDriving
   )} driving.`;
 
@@ -359,14 +526,22 @@ export async function GET(request, { params }) {
 
   drawHeader(doc, { monthLabel, driver });
 
+  drawLifetimeTripsBlock(doc, driver, totalTripsAllTime);
+
   drawHeroStats(doc, [
     { label: "Days Logged", value: String(logs.length) },
+    { label: "Trips Logged", value: String(totalTripsThisMonth) },
     { label: "Total Miles", value: totalMiles.toLocaleString() },
     { label: "Fuel Logged", value: `${totalFuel} gal` },
-    { label: "Driving Time", value: fmtHours(totalDriving), accent: "#FCA5A5" },
+    { label: "Driving Time", value: fmtHours(totalDriving), accent: COLORS.accentSoft },
   ]);
 
   drawSummarySentence(doc, summarySentence);
+
+  if (stateEntries.length > 0) {
+    sectionHeading(doc, "States Covered");
+    drawStatesColumns(doc, stateEntries, 3);
+  }
 
   sectionHeading(doc, "Days");
   drawDaysTable(doc, rows);

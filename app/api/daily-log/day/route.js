@@ -1,7 +1,5 @@
-
-
 import { NextResponse } from "next/server";
-import {connectDB} from "../../../lib/db";
+import { connectDB } from "../../../lib/db";
 import { DriverDailyLog, TripSheet } from "../../../models/schema";
 import { getCurrentDriver } from "../../../lib/getCurrentDriver";
 import { isDateEditable } from "../../../lib/editWindow";
@@ -28,6 +26,10 @@ export async function GET(request) {
     return NextResponse.json({ error: "Invalid date" }, { status: 400 });
   }
 
+  // All-time trip count for this driver — independent of the selected day,
+  // used for a "Total Trips" summary card alongside the day's trip count.
+  const totalTrips = await TripSheet.countDocuments({ driver: driver._id });
+
   const log = await DriverDailyLog.findOne({
     driver: driver._id,
     date: { $gte: start, $lt: end },
@@ -39,6 +41,7 @@ export async function GET(request) {
       log: null,
       trips: [],
       editable: isDateEditable(dateParam, driver.timezone),
+      totalTrips,
     });
   }
 
@@ -48,5 +51,6 @@ export async function GET(request) {
     log,
     trips,
     editable: isDateEditable(dateParam, driver.timezone),
+    totalTrips,
   });
 }

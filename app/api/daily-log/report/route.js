@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import PDFDocument from "pdfkit";
 import { connectDB } from "../../../lib/db";
-import { DriverDailyLog } from "../../../models/schema";
+import { DriverDailyLog, TripSheet } from "../../../models/schema";
 import { getCurrentDriver } from "../../../lib/getCurrentDriver";
 
 // npm install pdfkit
@@ -111,7 +111,7 @@ function sectionHeading(doc, text) {
   doc.moveDown(0.9);
 }
 
-function drawHeader(doc, { dateLabel, driver }) {
+function drawHeader(doc, { dateLabel, driver, totalTripsAllTime }) {
   const startX = doc.page.margins.left;
   const iconCx = startX + 10;
   const iconCy = doc.y + 12;
@@ -138,6 +138,31 @@ function drawHeader(doc, { dateLabel, driver }) {
     .font("Helvetica")
     .fillColor(COLORS.subtext)
     .text("Log closed — totals below are final", iconCx + 20, doc.y + 2);
+
+  // Small badge, top-right, showing this driver's lifetime trip count —
+  // "at a glance" context that this report is one day out of a longer
+  // history, without competing with the day's own hero stats below.
+  if (totalTripsAllTime != null) {
+    const badgeW = 150;
+    const badgeH = 28;
+    const badgeX = doc.page.width - doc.page.margins.right - badgeW;
+    const badgeY = doc.y - 32;
+    doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 6).fillAndStroke(COLORS.cardBg, COLORS.border);
+    doc.roundedRect(badgeX, badgeY, 3, badgeH, 1.5).fill(COLORS.accent);
+    doc
+      .fillColor(COLORS.subtext)
+      .font("Helvetica")
+      .fontSize(7.5)
+      .text("TOTAL TRIPS (ALL-TIME)", badgeX + 12, badgeY + 6, {
+        width: badgeW - 20,
+        characterSpacing: 0.3,
+      });
+    doc
+      .fillColor(COLORS.ink)
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .text(totalTripsAllTime.toLocaleString(), badgeX + 12, badgeY + 15, { width: badgeW - 20 });
+  }
 
   doc.moveDown(1.4);
 
@@ -237,6 +262,70 @@ function drawSummaryCards(doc, cardData, cols = 4) {
 
   const rows = Math.ceil(cardData.length / cols);
   doc.y = startY + rows * (rowHeight + gap) - gap + 18;
+}
+
+// States Covered, redrawn as a proper multi-column list instead of one long
+// comma-separated line. Long lists (many states in a day) used to run off
+// the page edge or wrap awkwardly mid-name; this lays each state out in its
+// own cell across `cols` columns, top-to-bottom then left-to-right, each
+// with a small accent bullet so it reads as a scannable list, not a
+// paragraph. Rows are measured per-item (a state name can wrap onto two
+// lines) so nothing overlaps, and it paginates cleanly like the tables.
+function drawStatesColumns(doc, states, cols = 3) {
+  if (!states.length) return;
+
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const gap = 16;
+  const colWidth = (pageWidth - gap * (cols - 1)) / cols;
+  const startX = doc.page.margins.left;
+  const bulletIndent = 14;
+  const textWidth = colWidth - bulletIndent;
+  const rowGap = 6;
+
+  const rows = Math.ceil(states.length / cols);
+
+  // Pre-measure each row's height as the tallest cell in that row, so
+  // wrapping state names don't collide with the row below.
+  const rowHeights = [];
+  for (let r = 0; r < rows; r++) {
+    let maxH = 0;
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (idx >= states.length) continue;
+      const h = doc.heightOfString(states[idx], { width: textWidth, fontSize: 10 });
+      maxH = Math.max(maxH, h);
+    }
+    rowHeights.push(Math.max(maxH, 12) + rowGap);
+  }
+
+  let y = doc.y;
+
+  for (let r = 0; r < rows; r++) {
+    const rowHeight = rowHeights[r];
+
+    const pageCountBefore = doc.bufferedPageRange().count;
+    ensureSpace(doc, rowHeight);
+    if (doc.bufferedPageRange().count !== pageCountBefore) {
+      y = doc.y;
+    }
+
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      if (idx >= states.length) continue;
+      const x = startX + c * (colWidth + gap);
+
+      doc.circle(x + 3, y + 6, 2.5).fill(COLORS.accent);
+      doc
+        .fillColor(COLORS.body)
+        .font("Helvetica")
+        .fontSize(10)
+        .text(states[idx], x + bulletIndent, y, { width: textWidth });
+    }
+
+    y += rowHeight;
+  }
+
+  doc.y = y + 10;
 }
 
 // Real table with a header row, alternating row shading and column rules,
@@ -629,6 +718,13 @@ export async function GET() {
 
   const trips = dailyLog.trips || [];
 
+  // Lifetime trip count for this driver — deliberately queried against
+  // TripSheet directly (not today's populated `trips`) and with NO date
+  // filter, so it reflects every trip this driver has ever logged, not
+  // just today's. This is a separate, cheap count query rather than
+  // populating every historical trip, since we only need the number.
+  const totalTripsAllTime = await TripSheet.countDocuments({ driver: driver._id });
+
   const totalMiles = trips.reduce((sum, t) => sum + (t.totalMiles || 0), 0);
   // Grand total fuel = sum of each trip's rolled-up fuel (trip.fuel), which
   // the backend already keeps in sync with every state-crossing and End
@@ -666,7 +762,7 @@ export async function GET() {
     year: "numeric",
   });
 
-  drawHeader(doc, { dateLabel, driver });
+  drawHeader(doc, { dateLabel, driver, totalTripsAllTime });
 
   drawHeroStats(doc, [
     { label: "Total Miles", value: totalMiles.toLocaleString() },
@@ -685,15 +781,14 @@ export async function GET() {
   const cardData = [
     ["Starting Odometer", startOdometer != null ? startOdometer.toLocaleString() : "—"],
     ["Ending Odometer", endOdometer != null ? endOdometer.toLocaleString() : "—"],
-    ["Trips Logged", String(trips.length)],
+    ["Trips Logged Today", String(trips.length)],
     ["States Covered", String(uniqueStates.length)],
   ];
   drawSummaryCards(doc, cardData);
 
   if (uniqueStates.length > 0) {
     sectionHeading(doc, "States Covered");
-    doc.font("Helvetica").fontSize(10).fillColor(COLORS.body).text(uniqueStates.join(", "));
-    doc.moveDown(1);
+    drawStatesColumns(doc, uniqueStates, 3);
   }
 
   sectionHeading(doc, "Trips");
