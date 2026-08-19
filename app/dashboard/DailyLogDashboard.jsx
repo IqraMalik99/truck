@@ -18,6 +18,10 @@ import { isDateEditable, relativeDayLabel, startOfDay, toDateKey } from "../lib/
   POST   /api/daily-log/status  -> { entry } body: { dailyLogId, status, from, to, purpose }
   POST   /api/daily-log/end     -> { log }   body: { dailyLogId }
   GET    /api/trucks            -> Truck[]
+  GET    /api/trucks/:id        -> { truck: Truck }   // used to auto-fetch a truck's latest
+                                                        // currentOdometer the moment it's selected
+                                                        // on the New Trip form, so it can prefill
+                                                        // "Starting odometer" (driver can still edit it)
   GET    /api/trailers          -> Trailer[]
   GET    /api/driver/trip-stats -> { totalTrips: number }   // all-time trip count for the logged-in driver
 
@@ -457,7 +461,7 @@ export default function DailyLogDashboard() {
           {dailyLog && (
             <>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-                <SummaryCard label="Trips" value={trips.length} />
+                <SummaryCard label="Today Trips" value={trips.length} />
                 <SummaryCard
                   label="Total Trips"
                   value={totalTrips === null ? "…" : totalTrips.toLocaleString()}
@@ -1042,8 +1046,45 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
   const [saving, setSaving] = useState(false);
   const [trailerError, setTrailerError] = useState("");
 
+  // Odometer auto-fetch: fired the instant a truck is selected. It only
+  // ever *suggests* a value — the input stays a normal editable field, and
+  // typing in it clears the "auto-filled" hint below.
+  const [fetchingOdometer, setFetchingOdometer] = useState(false);
+  const [odometerAutoFilled, setOdometerAutoFilled] = useState(false);
+  const [odometerFetchError, setOdometerFetchError] = useState("");
+
   const truckOptions = trucks.map((t) => ({ value: t._id, label: `Unit ${t.unitNumber}` }));
   const trailerOptions = trailers.map((t) => ({ value: t._id, label: `Trailer ${t.trailerNumber}` }));
+
+  async function handleTruckChange(truckId) {
+    setTruck(truckId);
+    setOdometerFetchError("");
+    setOdometerAutoFilled(false);
+
+    if (!truckId) return;
+
+    setFetchingOdometer(true);
+    try {
+      const res = await fetch(`/api/trucks/${truckId}`);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const odo = data?.truck?.currentOdometer ?? data?.currentOdometer;
+      if (typeof odo === "number") {
+        setOdometerBeginning(String(odo));
+        setOdometerAutoFilled(true);
+      }
+    } catch {
+      setOdometerFetchError("Couldn't auto-fetch this truck's odometer — enter it manually.");
+    } finally {
+      setFetchingOdometer(false);
+    }
+  }
+
+  function handleOdometerChange(value) {
+    setOdometerBeginning(value);
+    // once the driver types, this is no longer "auto-filled" — it's their number
+    if (odometerAutoFilled) setOdometerAutoFilled(false);
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -1084,7 +1125,7 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
       <Field label="Truck">
         <SearchableSelect
           value={truck}
-          onChange={setTruck}
+          onChange={handleTruckChange}
           options={truckOptions}
           placeholder="Select truck"
         />
@@ -1102,13 +1143,31 @@ function TripForm({ trucks, trailers, onCancel, onSubmit }) {
         {trailerError && <p className="text-xs text-[#7F1D1D] mt-1">{trailerError}</p>}
       </Field>
       <Field label="Starting odometer">
-        <input
-          type="number"
-          required
-          value={odometerBeginning}
-          onChange={(e) => setOdometerBeginning(e.target.value)}
-          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-        />
+        <div className="relative">
+          <input
+            type="number"
+            required
+            value={odometerBeginning}
+            onChange={(e) => handleOdometerChange(e.target.value)}
+            disabled={fetchingOdometer}
+            placeholder={fetchingOdometer ? "Fetching…" : ""}
+            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400"
+          />
+          {fetchingOdometer && (
+            <SpinnerIcon className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+          )}
+        </div>
+        {fetchingOdometer && (
+          <p className="text-xs text-slate-400 mt-1">Fetching this truck's last odometer…</p>
+        )}
+        {!fetchingOdometer && odometerAutoFilled && (
+          <p className="text-xs text-emerald-600 mt-1">
+            Auto-filled from the truck's last reading — edit it if it's changed.
+          </p>
+        )}
+        {!fetchingOdometer && odometerFetchError && (
+          <p className="text-xs text-amber-600 mt-1">{odometerFetchError}</p>
+        )}
       </Field>
       <div className="sm:col-span-3 flex flex-col sm:flex-row justify-end gap-2 pt-1">
         <button

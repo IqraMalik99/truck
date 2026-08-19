@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
+import Navbar from "./components/Navbar";
 /* ---------------------------------------------------------------------
    THEME - white & red, kept at the top of this one file on purpose
 --------------------------------------------------------------------- */
@@ -56,6 +56,7 @@ export default function Home() {
           * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
         }
       `}</style>
+      <Navbar/>
       <HeroBanner />
       <FeaturesSection />
       <WavySection />
