@@ -112,7 +112,7 @@ function DriverCard({ driver }) {
         {driver.phone}
       </div>
       <div className="drv-col-hide-sm" style={{ fontSize: 12.5, color: "#374151", width: 100, flexShrink: 0 }}>
-        {driver.licenseNumber}
+        {driver.email}
       </div>
     </Link>
   );
